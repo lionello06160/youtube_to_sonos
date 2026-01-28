@@ -1,0 +1,75 @@
+
+> server@1.0.0 start
+> node index.js
+
+[v8.0 (Clean URI)] 7:15:53 AM | BOOT: Starting Sonons v8.0 (Clean URI)...
+[v8.0 (Clean URI)] 7:15:53 AM | Sonons v8.0 (Clean URI) Ready.
+[v8.0 (Clean URI)] 7:15:59 AM | [REQ] GET /check
+[v8.0 (Clean URI)] 7:16:37 AM | [REQ] GET /sonons.mp3
+[v8.0 (Clean URI)] 7:16:37 AM | SPEAKER CONNECTED to /sonons.mp3
+[v8.0 (Clean URI)] 7:16:37 AM | No active URL set, closing connection.
+[v8.0 (Clean URI)] 7:16:51 AM | [REQ] GET /logs
+[v8.0 (Clean URI)] 7:16:53 AM | [REQ] GET /devices
+[v8.0 (Clean URI)] 7:16:57 AM | [REQ] GET /devices
+[v8.0 (Clean URI)] 7:16:58 AM | [REQ] GET /scan
+[v8.0 (Clean URI)] 7:17:02 AM | [REQ] GET /scan
+[v8.0 (Clean URI)] 7:17:06 AM | [REQ] POST /group
+[v8.0 (Clean URI)] 7:17:06 AM | [WARN] Master leave group failed: upnp: statusCode 500 & upnpErrorCode <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>1023</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>
+[v8.0 (Clean URI)] 7:17:07 AM | [WARN] Join failed for 10.10.4.104: upnp: statusCode 500 & upnpErrorCode <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>402</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>
+[v8.0 (Clean URI)] 7:17:07 AM | [REQ] POST /play
+[v8.0 (Clean URI)] 7:17:07 AM | SETUP CLEAN PLAY: https://www.youtube.com/watch?v=aSmQiMLnnNc&list=RDaSmQiMLnnNc&start_radio=1 on 10.10.4.188
+[v8.0 (Clean URI)] 7:17:07 AM | - Coordinator resolved: 10.10.4.188 -> 10.10.4.104
+[v8.0 (Clean URI)] 7:17:08 AM | - Title: 「無廣告版」快速地完成工作 ☕ 最專心讀書＆工作音樂～5 HOURS RELAX STUDYING MUSIC FOR CONCENTRATION
+[v8.0 (Clean URI)] 7:17:08 AM | - Primary URI: x-rincon-mp3radio://10.10.4.213:3005/sonons.mp3
+[v8.0 (Clean URI)] 7:17:08 AM | - Trying AVTransport: x-rincon-mp3radio + meta
+[v8.0 (Clean URI)] 7:17:08 AM | - Starting playback...
+[v8.0 (Clean URI)] 7:17:08 AM | [REQ] GET /sonons.mp3
+[v8.0 (Clean URI)] 7:17:08 AM | SPEAKER CONNECTED to /sonons.mp3
+[v8.0 (Clean URI)] 7:17:11 AM | STREAM CLOSED.
+[v8.0 (Clean URI)] 7:17:11 AM | [SUCCESS] Device accepted: x-rincon-mp3radio + meta
+[v8.0 (Clean URI)] 7:17:11 AM | CRITICAL: write EPIPE
+[v8.0 (Clean URI)] 7:17:11 AM | FF Exit: code=255 signal=null
+[v8.0 (Clean URI)] 7:17:11 AM | FF Stderr: ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers built with Apple clang version 17.0.0 (clang-1700.6.3.2) configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/8.0.1_1 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags= --enable-ffplay --enable-gpl --enable-libsvtav1 --enable-libopus --enable-libx264 --enable-libmp3lame --enable-libdav1d --enable-libvpx --enable-libx265 --enable-videotoolbox --enable-audiotoolbox --enable-neon libavutil 60. 8.100 / 60. 8.100 libavcodec 62. 11.100 / 62. 11.100 libavformat 62. 3.100 / 62. 3.100 libavdevice 62. 1.100 / 62. 1.100 libavfilter 11. 4.100 / 11. 4.100 libswscale 9. 1.100 / 9. 1.100 libswresample 6. 1.100 / 6. 1.100 Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'pipe:0': Metadata: major_brand : mp42 minor_version : 0 compatible_brands: isommp42 creation_time : 2025-01-14T16:09:57.000000Z encoder : Google Duration: 05:17:14.35, start: 0.000000, bitrate: N/A Stream #0:0[0x1](und): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 640x360 [SAR 1:1 DAR 16:9], 97 kb/s, 29.97 fps, 29.97 tbr, 30k tbn (default) Metadata: creation_time : 2025-01-14T16:09:57.000000Z handler_name : ISO Media file produced by Google Inc. Created on: 01/14/2025. vendor_id : [0][0][0][0] Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 128 kb/s (default) Metadata: creation_time : 2025-01-14T16:09:57.000000Z handler_name : ISO Media file produced by Google Inc. Created on: 01/14/2025. vendor_id : [0][0][0][0] Stream mapping: Stream #0:1 -> #0:0 (aac (native) -> mp3 (libmp3lame)) Output #0, mp3, to 'pipe:1': Metadata: major_brand : mp42 minor_version : 0 compatible_brands: isommp42 TSSE : Lavf62.3.100 Stream #0:0(eng): Audio: mp3, 44100 Hz, stereo, fltp, 192 kb/s (default) Metadata: encoder : Lavc62.11.100 libmp3lame creation_time : 2025-01-14T16:09:57.000000Z handler_name : ISO Media file produced by Google Inc. Created on: 01/14/2025. vendor_id : [0][0][0][0]
+[v8.0 (Clean URI)] 7:17:11 AM | [REQ] GET /sonons.mp3
+[v8.0 (Clean URI)] 7:17:11 AM | SPEAKER CONNECTED to /sonons.mp3
+[v8.0 (Clean URI)] 7:17:27 AM | [REQ] GET /logs
+[v8.0 (Clean URI)] 7:17:43 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:43 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:43 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:44 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:48 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:48 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:48 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:49 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:49 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:17:49 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:18:33 AM | [REQ] GET /devices
+[v8.0 (Clean URI)] 7:18:37 AM | [REQ] GET /devices
+[v8.0 (Clean URI)] 7:18:47 AM | [REQ] GET /scan
+[v8.0 (Clean URI)] 7:19:55 AM | [REQ] POST /group
+[v8.0 (Clean URI)] 7:19:55 AM | [WARN] Master leave group failed: upnp: statusCode 500 & upnpErrorCode <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>1023</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>
+[v8.0 (Clean URI)] 7:19:55 AM | [WARN] Join failed for 10.10.4.104: upnp: statusCode 500 & upnpErrorCode <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>402</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>
+[v8.0 (Clean URI)] 7:19:55 AM | [REQ] POST /play
+[v8.0 (Clean URI)] 7:19:55 AM | SETUP CLEAN PLAY: https://www.youtube.com/watch?v=7RE1lp4PmW4&list=RD7RE1lp4PmW4&start_radio=1 on 10.10.4.188
+[v8.0 (Clean URI)] 7:19:55 AM | - Coordinator resolved: 10.10.4.188 -> 10.10.4.104
+[v8.0 (Clean URI)] 7:19:57 AM | - Title: 有助於集中註意力的學習氛圍音樂☔️ 雨聲 提升專注力 寫作業 學習 工作 專用音樂【有效提升記憶力】
+[v8.0 (Clean URI)] 7:19:57 AM | - Primary URI: x-rincon-mp3radio://10.10.4.213:3005/sonons.mp3
+[v8.0 (Clean URI)] 7:19:57 AM | - Trying AVTransport: x-rincon-mp3radio + meta
+[v8.0 (Clean URI)] 7:19:57 AM | STREAM CLOSED.
+[v8.0 (Clean URI)] 7:19:57 AM | - Starting playback...
+[v8.0 (Clean URI)] 7:19:57 AM | [REQ] GET /sonons.mp3
+[v8.0 (Clean URI)] 7:19:57 AM | SPEAKER CONNECTED to /sonons.mp3
+[v8.0 (Clean URI)] 7:19:59 AM | STREAM CLOSED.
+[v8.0 (Clean URI)] 7:19:59 AM | [SUCCESS] Device accepted: x-rincon-mp3radio + meta
+[v8.0 (Clean URI)] 7:19:59 AM | YT Exit: code=null signal=SIGTERM
+[v8.0 (Clean URI)] 7:19:59 AM | YT Stderr: [youtube:tab] Extracting URL: https://www.youtube.com/watch?v=7RE1lp4PmW4&list=RD7RE1lp4PmW4&start_radio=1 [youtube:tab] Downloading just the video 7RE1lp4PmW4 because of --no-playlist [youtube] Extracting URL: https://www.youtube.com/watch?v=7RE1lp4PmW4 [youtube] 7RE1lp4PmW4: Downloading webpage [youtube] 7RE1lp4PmW4: Downloading android player API JSON [info] 7RE1lp4PmW4: Downloading 1 format(s): 18 [download] Destination: - [download] 0.0% of 104.76MiB at Unknown B/s ETA Unknown [download] 0.0% of 104.76MiB at 2.36MiB/s ETA 00:44 [download] 0.0% of 104.76MiB at 4.28MiB/s ETA 00:24 [download] 0.0% of 104.76MiB at 7.71MiB/s ETA 00:13 [download] 0.0% of 104.76MiB at 11.51MiB/s ETA 00:09 [download] 0.1% of 104.76MiB at 7.62MiB/s ETA 00:13 [download] 0.1% of 104.76MiB at 10.80MiB/s ETA 00:09 [download] 0.2% of 104.76MiB at 11.44MiB/s ETA 00:09 [download] 0.5% of 104.76MiB at 3.88MiB/s ETA 00:26 [download] 1.0% of 104.76MiB at 6.70MiB/s ETA 00:15 [download] 1.9% of 104.76MiB at 6.51MiB/s ETA 00:15
+[v8.0 (Clean URI)] 7:19:59 AM | FF Exit: code=255 signal=null
+[v8.0 (Clean URI)] 7:19:59 AM | FF Stderr: ffmpeg version 8.0.1 Copyright (c) 2000-2025 the FFmpeg developers built with Apple clang version 17.0.0 (clang-1700.6.3.2) configuration: --prefix=/opt/homebrew/Cellar/ffmpeg/8.0.1_1 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags= --enable-ffplay --enable-gpl --enable-libsvtav1 --enable-libopus --enable-libx264 --enable-libmp3lame --enable-libdav1d --enable-libvpx --enable-libx265 --enable-videotoolbox --enable-audiotoolbox --enable-neon libavutil 60. 8.100 / 60. 8.100 libavcodec 62. 11.100 / 62. 11.100 libavformat 62. 3.100 / 62. 3.100 libavdevice 62. 1.100 / 62. 1.100 libavfilter 11. 4.100 / 11. 4.100 libswscale 9. 1.100 / 9. 1.100 libswresample 6. 1.100 / 6. 1.100 Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'pipe:0': Metadata: major_brand : mp42 minor_version : 0 compatible_brands: isommp42 creation_time : 2025-08-11T13:44:39.000000Z encoder : Google Duration: 01:08:27.75, start: 0.000000, bitrate: N/A Stream #0:0[0x1](und): Video: h264 (Main) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 640x360 [SAR 1:1 DAR 16:9], 81 kb/s, 30 fps, 30 tbr, 15360 tbn (default) Metadata: creation_time : 2025-08-11T13:44:39.000000Z handler_name : ISO Media file produced by Google Inc. Created on: 08/11/2025. vendor_id : [0][0][0][0] Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 128 kb/s (default) Metadata: creation_time : 2025-08-11T13:44:39.000000Z handler_name : ISO Media file produced by Google Inc. Created on: 08/11/2025. vendor_id : [0][0][0][0] Stream mapping: Stream #0:1 -> #0:0 (aac (native) -> mp3 (libmp3lame)) Output #0, mp3, to 'pipe:1': Metadata: major_brand : mp42 minor_version : 0 compatible_brands: isommp42 TSSE : Lavf62.3.100 Stream #0:0(und): Audio: mp3, 44100 Hz, stereo, fltp, 192 kb/s (default) Metadata: encoder : Lavc62.11.100 libmp3lame creation_time : 2025-08-11T13:44:39.000000Z handler_name : ISO Media file produced by Google Inc. Created on: 08/11/2025. vendor_id : [0][0][0][0]
+[v8.0 (Clean URI)] 7:19:59 AM | [REQ] GET /sonons.mp3
+[v8.0 (Clean URI)] 7:19:59 AM | SPEAKER CONNECTED to /sonons.mp3
+[v8.0 (Clean URI)] 7:20:16 AM | [REQ] GET /logs
+[v8.0 (Clean URI)] 7:26:43 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:26:43 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:26:44 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:26:45 AM | [REQ] POST /volume
+[v8.0 (Clean URI)] 7:26:47 AM | [REQ] POST /volume
