@@ -14,7 +14,6 @@ const progressDuration = document.getElementById('progressDuration');
 
 const scanBtn = document.getElementById('scanBtn');
 const playBtn = document.getElementById('playBtn');
-const pauseBtn = document.getElementById('pauseBtn');
 const stopBtn = document.getElementById('stopBtn');
 const selectAllBtn = document.getElementById('selectAllBtn');
 const clearBtn = document.getElementById('clearBtn');
@@ -209,21 +208,6 @@ const play = async () => {
   }
 };
 
-const pause = async () => {
-  if (!selectedHosts.length) return;
-  try {
-    await request('/pause', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceHost: selectedHosts[0] })
-    });
-    showToast('Paused');
-    fetchStatus();
-  } catch {
-    showToast('Pause failed');
-  }
-};
-
 const stop = async () => {
   if (!selectedHosts.length) return;
   try {
@@ -241,7 +225,6 @@ const stop = async () => {
 
 scanBtn.addEventListener('click', fetchDevices);
 playBtn.addEventListener('click', play);
-pauseBtn.addEventListener('click', pause);
 stopBtn.addEventListener('click', stop);
 youtubeUrl.addEventListener('input', () => saveLastUrl(youtubeUrl.value));
 selectAllBtn.addEventListener('click', () => {

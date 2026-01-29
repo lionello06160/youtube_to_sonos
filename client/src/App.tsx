@@ -211,17 +211,6 @@ function App() {
     }
   };
 
-  const handlePause = async () => {
-    if (selectedHosts.length === 0) return;
-    try {
-      await axios.post(`${API_URL}/pause`, { deviceHost: selectedHosts[0] });
-      setNowPlaying((prev) => prev ? { ...prev, isPlaying: false } : prev);
-      showToast('Paused');
-    } catch (err: any) {
-      showToast('Pause failed');
-    }
-  };
-
   const handleStop = async () => {
     if (selectedHosts.length === 0) return;
     try {
@@ -474,13 +463,6 @@ function App() {
             >
               <span className={`material-symbols-outlined text-[20px] ${broadcasting ? 'animate-spin' : ''}`}>{broadcasting ? 'progress_activity' : 'play_arrow'}</span>
               {broadcasting ? 'Broadcasting' : 'Start Broadcast'}
-            </button>
-            <button
-              onClick={handlePause}
-              disabled={selectedHosts.length === 0}
-              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <span className="material-symbols-outlined text-[20px]">pause</span>
             </button>
             <button
               onClick={handleStop}
