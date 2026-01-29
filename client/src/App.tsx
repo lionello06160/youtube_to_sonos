@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import type { Device } from './types';
 
-const API_URL = `http://10.10.4.213:3005`;
+const API_URL = `http://10.10.4.14:3005`;
 
 const PlayOneIcon = ({ className }: { className?: string }) => (
   <svg
