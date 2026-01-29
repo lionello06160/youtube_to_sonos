@@ -25,6 +25,7 @@ let apiUrl = DEFAULT_URL;
 let devices = [];
 let selectedHosts = [];
 let lastStatus = null;
+let saveUrlTimer = null;
 
 const formatTime = (seconds) => {
   if (!Number.isFinite(seconds)) return '--:--';
@@ -82,9 +83,22 @@ const request = async (path, options) => {
 };
 
 const loadSettings = async () => {
-  const { apiUrl: stored } = await chrome.storage.sync.get({ apiUrl: DEFAULT_URL });
+  const { apiUrl: stored, lastYoutubeUrl } = await chrome.storage.sync.get({
+    apiUrl: DEFAULT_URL,
+    lastYoutubeUrl: ''
+  });
   apiUrl = stored || DEFAULT_URL;
   serverUrl.textContent = `Server: ${apiUrl}`;
+  if (lastYoutubeUrl && !youtubeUrl.value) {
+    youtubeUrl.value = lastYoutubeUrl;
+  }
+};
+
+const saveLastUrl = (value) => {
+  if (saveUrlTimer) clearTimeout(saveUrlTimer);
+  saveUrlTimer = setTimeout(() => {
+    chrome.storage.sync.set({ lastYoutubeUrl: value.trim() });
+  }, 300);
 };
 
 const renderDevices = () => {
@@ -187,6 +201,7 @@ const play = async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceHost: selectedHosts[0], youtubeUrl: youtubeUrl.value })
     });
+    saveLastUrl(youtubeUrl.value);
     showToast('Broadcast started');
     fetchStatus();
   } catch {
@@ -228,6 +243,7 @@ scanBtn.addEventListener('click', fetchDevices);
 playBtn.addEventListener('click', play);
 pauseBtn.addEventListener('click', pause);
 stopBtn.addEventListener('click', stop);
+youtubeUrl.addEventListener('input', () => saveLastUrl(youtubeUrl.value));
 selectAllBtn.addEventListener('click', () => {
   selectedHosts = devices.map((d) => d.host);
   renderDevices();

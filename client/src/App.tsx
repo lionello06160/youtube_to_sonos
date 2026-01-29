@@ -79,6 +79,7 @@ function formatTime(seconds: number) {
 }
 
 function App() {
+  const YT_STORAGE_KEY = 'sonons:lastYoutubeUrl';
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedHosts, setSelectedHosts] = useState<string[]>([]);
   const [discovering, setDiscovering] = useState(false);
@@ -124,6 +125,21 @@ function App() {
   useEffect(() => {
     fetchDeep();
   }, []);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(YT_STORAGE_KEY);
+    if (stored && !youtubeUrl) {
+      setYoutubeUrl(stored);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (youtubeUrl) {
+      localStorage.setItem(YT_STORAGE_KEY, youtubeUrl);
+    } else {
+      localStorage.removeItem(YT_STORAGE_KEY);
+    }
+  }, [youtubeUrl]);
 
   useEffect(() => {
     let mounted = true;
@@ -394,6 +410,7 @@ function App() {
                             min="0"
                             max="100"
                             value={device.volume}
+                            style={{ '--volume': `${device.volume}%` } as React.CSSProperties}
                             onChange={(e) => handleVolumeChange(device.host, Number(e.target.value))}
                           />
                         </div>
