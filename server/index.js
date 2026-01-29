@@ -3,6 +3,8 @@ const { Sonos, AsyncDeviceDiscovery } = require('sonos');
 const cors = require('cors');
 const { spawn, exec } = require('child_process');
 const util = require('util');
+const fs = require('fs');
+const path = require('path');
 const execPromise = util.promisify(exec);
 
 const app = express();
@@ -25,9 +27,51 @@ let currentDirectUrl = '';
 let currentDirectUrlAt = 0;
 const DIRECT_URL_TTL_MS = 5 * 60 * 1000;
 let activeStreamCount = 0;
+const CONFIG_PATH = path.join(__dirname, 'config.json');
 const DAILY_STOP_HOUR = 17;
 const DAILY_STOP_MINUTE = 0;
 let dailyStopTimer = null;
+let dailyStartTimer = null;
+let autoConfig = {
+    autoPlayUrl: '',
+    autoPlayDeviceHost: '',
+    autoPlayTime: '',
+    autoStopTime: '',
+    autoPlayOnBoot: false
+};
+
+const parseTime = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour, minute };
+};
+
+const loadAutoConfig = () => {
+    const envConfig = {
+        autoPlayUrl: process.env.AUTO_PLAY_URL || '',
+        autoPlayDeviceHost: process.env.AUTO_PLAY_DEVICE_HOST || '',
+        autoPlayTime: process.env.AUTO_PLAY_TIME || '',
+        autoStopTime: process.env.AUTO_STOP_TIME || '',
+        autoPlayOnBoot: String(process.env.AUTO_PLAY_ON_BOOT || '').toLowerCase() === 'true'
+    };
+    if (!fs.existsSync(CONFIG_PATH)) {
+        autoConfig = envConfig;
+        return;
+    }
+    try {
+        const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        autoConfig = { ...envConfig, ...parsed };
+    } catch (err) {
+        log(`[WARN] Failed to read config.json: ${err.message}`);
+        autoConfig = envConfig;
+    }
+};
 
 const logs = [];
 const log = (msg) => {
@@ -93,9 +137,13 @@ const scheduleRestart = (reason) => {
 
 const scheduleDailyStop = () => {
     if (dailyStopTimer) clearTimeout(dailyStopTimer);
+    const stopTime = parseTime(autoConfig.autoStopTime) || {
+        hour: DAILY_STOP_HOUR,
+        minute: DAILY_STOP_MINUTE
+    };
     const now = new Date();
     const next = new Date(now);
-    next.setHours(DAILY_STOP_HOUR, DAILY_STOP_MINUTE, 0, 0);
+    next.setHours(stopTime.hour, stopTime.minute, 0, 0);
     if (next <= now) {
         next.setDate(next.getDate() + 1);
     }
@@ -121,6 +169,33 @@ const scheduleDailyStop = () => {
     }, delay);
 };
 
+const scheduleDailyStart = () => {
+    if (dailyStartTimer) clearTimeout(dailyStartTimer);
+    const startTime = parseTime(autoConfig.autoPlayTime);
+    if (!startTime || !autoConfig.autoPlayUrl || !autoConfig.autoPlayDeviceHost) {
+        log('Daily start not scheduled (missing autoPlayTime/autoPlayUrl/autoPlayDeviceHost).');
+        return;
+    }
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(startTime.hour, startTime.minute, 0, 0);
+    if (next <= now) {
+        next.setDate(next.getDate() + 1);
+    }
+    const delay = next.getTime() - now.getTime();
+    log(`Daily start scheduled for ${next.toLocaleString()}`);
+    dailyStartTimer = setTimeout(async () => {
+        try {
+            await startPlayback(autoConfig.autoPlayDeviceHost, autoConfig.autoPlayUrl);
+            log('Daily start: playback started.');
+        } catch (err) {
+            log(`[WARN] Daily start failed: ${err.message}`);
+        } finally {
+            scheduleDailyStart();
+        }
+    }, delay);
+};
+
 const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
     const now = Date.now();
     if (currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
@@ -140,7 +215,19 @@ const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
 };
 
 log(`BOOT: Starting Sonons v${VERSION}...`);
+loadAutoConfig();
 scheduleDailyStop();
+scheduleDailyStart();
+if (autoConfig.autoPlayOnBoot && autoConfig.autoPlayUrl && autoConfig.autoPlayDeviceHost) {
+    setTimeout(async () => {
+        try {
+            await startPlayback(autoConfig.autoPlayDeviceHost, autoConfig.autoPlayUrl);
+            log('Auto play on boot started.');
+        } catch (err) {
+            log(`[WARN] Auto play on boot failed: ${err.message}`);
+        }
+    }, 8000);
+}
 
 const resolveCoordinatorHost = async (deviceHost) => {
     try {
@@ -291,103 +378,106 @@ app.post('/group', async (req, res) => {
     }
 });
 
+const startPlayback = async (deviceHost, youtubeUrl) => {
+    log(`SETUP CLEAN PLAY: ${youtubeUrl} on ${deviceHost}`);
+
+    // 1. UPDATE STATE
+    currentYoutubeUrl = youtubeUrl;
+    currentDirectUrl = '';
+    currentDirectUrlAt = 0;
+
+    const coordinatorHost = await resolveCoordinatorHost(deviceHost);
+    if (coordinatorHost !== deviceHost) {
+        log(`- Coordinator resolved: ${deviceHost} -> ${coordinatorHost}`);
+    }
+    const device = new Sonos(coordinatorHost);
+    try {
+        await withRetry(() => device.stop(), { label: 'Preflight stop', attempts: 2, baseDelay: 300 });
+    } catch (err) {
+        log(`[WARN] Preflight stop failed: ${err.message}`);
+    }
+    const ytExtractorArgs = 'youtube:player_client=android,web';
+    const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    const { stdout } = await execPromise(
+        `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${youtubeUrl}"`,
+        { maxBuffer: 1024 * 1024 }
+    );
+    const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const title = lines[0] || 'Sonons Audio';
+    const art = lines[1] || '';
+    const durationSec = Number(lines[2]);
+    const durationLabel = lines[3] || null;
+
+    currentTitle = title;
+    currentDurationSec = Number.isFinite(durationSec) ? durationSec : null;
+    currentDurationLabel = durationLabel;
+    const normalizedTitle = truncate(normalizeTitle(title), 120);
+    const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
+    const safeTitle = escapeXml(normalizedTitle);
+    const safeAsciiTitle = escapeXml(asciiTitle);
+
+    // 2. CLEAN URI - No query params, looks like a static file
+    // We use x-rincon-mp3radio for best "Stream" compatibility
+    const streamHost = `${HOST_IP}:${PORT}`;
+    const streamPath = `${streamHost}/sonons.mp3`;
+    const uriMp3Radio = `x-rincon-mp3radio://${streamPath}`;
+    const uriHttp = `http://${streamPath}`;
+
+    log(`- Title: ${title}`);
+    log(`- Primary URI: ${uriMp3Radio}`);
+
+    // 3. MINIMAL METADATA
+    // Sometimes less is more. We use a generic radio metadata block.
+    const buildMetadata = (titleValue) =>
+        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
+
+    const candidates = [
+        { label: 'x-rincon-mp3radio + meta', uri: uriMp3Radio, metadata: buildMetadata(safeTitle) },
+        { label: 'x-rincon-mp3radio + ascii-meta', uri: uriMp3Radio, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'x-rincon-mp3radio + empty', uri: uriMp3Radio, metadata: '' },
+        { label: 'http + meta', uri: uriHttp, metadata: buildMetadata(safeTitle) },
+        { label: 'http + ascii-meta', uri: uriHttp, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'http + empty', uri: uriHttp, metadata: '' }
+    ];
+
+    let lastError;
+    for (const option of candidates) {
+        try {
+            log(`- Trying AVTransport: ${option.label}`);
+            await withRetry(
+                () => device.setAVTransportURI({ uri: option.uri, metadata: option.metadata, onlySetUri: true }),
+                { label: `Set AVTransport (${option.label})`, attempts: 3, baseDelay: 400 }
+            );
+            log(`- Starting playback...`);
+            await withRetry(() => device.play(), { label: 'Play', attempts: 3, baseDelay: 400 });
+            log(`[SUCCESS] Device accepted: ${option.label}`);
+            lastPlayback = {
+                deviceHost: coordinatorHost,
+                uri: option.uri,
+                metadata: option.metadata,
+                startedAt: Date.now()
+            };
+            restartAttempts = 0;
+            if (restartTimer) {
+                clearTimeout(restartTimer);
+                restartTimer = null;
+            }
+            return { title, art };
+        } catch (err) {
+            lastError = err;
+            log(`- Failed: ${option.label} -> ${err.message}`);
+        }
+    }
+
+    throw lastError || new Error('All AVTransport candidates failed');
+};
+
 // Play (YouTube)
 app.post('/play', async (req, res) => {
     const { deviceHost, youtubeUrl } = req.body;
-    log(`SETUP CLEAN PLAY: ${youtubeUrl} on ${deviceHost}`);
-
     try {
-        // 1. UPDATE STATE
-        currentYoutubeUrl = youtubeUrl;
-        currentDirectUrl = '';
-        currentDirectUrlAt = 0;
-
-        const coordinatorHost = await resolveCoordinatorHost(deviceHost);
-        if (coordinatorHost !== deviceHost) {
-            log(`- Coordinator resolved: ${deviceHost} -> ${coordinatorHost}`);
-        }
-        const device = new Sonos(coordinatorHost);
-        try {
-            await withRetry(() => device.stop(), { label: 'Preflight stop', attempts: 2, baseDelay: 300 });
-        } catch (err) {
-            log(`[WARN] Preflight stop failed: ${err.message}`);
-        }
-        const ytExtractorArgs = 'youtube:player_client=android,web';
-        const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-        const { stdout } = await execPromise(
-            `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${youtubeUrl}"`,
-            { maxBuffer: 1024 * 1024 }
-        );
-        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        const title = lines[0] || 'Sonons Audio';
-        const art = lines[1] || '';
-        const durationSec = Number(lines[2]);
-        const durationLabel = lines[3] || null;
-
-        currentTitle = title;
-        currentDurationSec = Number.isFinite(durationSec) ? durationSec : null;
-        currentDurationLabel = durationLabel;
-        const normalizedTitle = truncate(normalizeTitle(title), 120);
-        const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
-        const safeTitle = escapeXml(normalizedTitle);
-        const safeAsciiTitle = escapeXml(asciiTitle);
-
-        // 2. CLEAN URI - No query params, looks like a static file
-        // We use x-rincon-mp3radio for best "Stream" compatibility
-        const streamHost = `${HOST_IP}:${PORT}`;
-        const streamPath = `${streamHost}/sonons.mp3`;
-        const uriMp3Radio = `x-rincon-mp3radio://${streamPath}`;
-        const uriHttp = `http://${streamPath}`;
-
-        log(`- Title: ${title}`);
-        log(`- Primary URI: ${uriMp3Radio}`);
-
-        // 3. MINIMAL METADATA
-        // Sometimes less is more. We use a generic radio metadata block.
-        const buildMetadata = (titleValue) =>
-            `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
-
-        const candidates = [
-            { label: 'x-rincon-mp3radio + meta', uri: uriMp3Radio, metadata: buildMetadata(safeTitle) },
-            { label: 'x-rincon-mp3radio + ascii-meta', uri: uriMp3Radio, metadata: buildMetadata(safeAsciiTitle) },
-            { label: 'x-rincon-mp3radio + empty', uri: uriMp3Radio, metadata: '' },
-            { label: 'http + meta', uri: uriHttp, metadata: buildMetadata(safeTitle) },
-            { label: 'http + ascii-meta', uri: uriHttp, metadata: buildMetadata(safeAsciiTitle) },
-            { label: 'http + empty', uri: uriHttp, metadata: '' }
-        ];
-
-        let lastError;
-        for (const option of candidates) {
-            try {
-                log(`- Trying AVTransport: ${option.label}`);
-                await withRetry(
-                    () => device.setAVTransportURI({ uri: option.uri, metadata: option.metadata, onlySetUri: true }),
-                    { label: `Set AVTransport (${option.label})`, attempts: 3, baseDelay: 400 }
-                );
-                log(`- Starting playback...`);
-                await withRetry(() => device.play(), { label: 'Play', attempts: 3, baseDelay: 400 });
-                log(`[SUCCESS] Device accepted: ${option.label}`);
-                lastPlayback = {
-                    deviceHost: coordinatorHost,
-                    uri: option.uri,
-                    metadata: option.metadata,
-                    startedAt: Date.now()
-                };
-                restartAttempts = 0;
-                if (restartTimer) {
-                    clearTimeout(restartTimer);
-                    restartTimer = null;
-                }
-                res.send({ status: 'playing', title });
-                return;
-            } catch (err) {
-                lastError = err;
-                log(`- Failed: ${option.label} -> ${err.message}`);
-            }
-        }
-
-        throw lastError || new Error('All AVTransport candidates failed');
-
+        const { title } = await startPlayback(deviceHost, youtubeUrl);
+        res.send({ status: 'playing', title });
     } catch (e) {
         log(`[FATAL] Play Error: ${e.message}`);
         res.status(500).send(e.message);
