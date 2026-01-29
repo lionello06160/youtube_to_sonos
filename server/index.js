@@ -51,6 +51,13 @@ const parseTime = (value) => {
     if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
     return { hour, minute };
 };
+const formatTimeParts = (hour, minute) =>
+    `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+const getEffectiveStopTime = () => {
+    const parsed = parseTime(autoConfig.autoStopTime);
+    if (parsed) return formatTimeParts(parsed.hour, parsed.minute);
+    return formatTimeParts(DAILY_STOP_HOUR, DAILY_STOP_MINUTE);
+};
 
 const loadAutoConfig = () => {
     const envConfig = {
@@ -556,7 +563,7 @@ app.get('/status', (req, res) => {
         deviceHost: lastPlayback?.deviceHost || null,
         durationSec: currentDurationSec,
         durationLabel: currentDurationLabel,
-        autoStopTime: autoConfig.autoStopTime || null,
+        autoStopTime: getEffectiveStopTime(),
         autoShutdownTime: autoConfig.autoShutdownTime || null
     });
 });
