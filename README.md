@@ -64,8 +64,8 @@ http://localhost:5173
 
 ## Usage
 
-1. Click **Scan** or **Deep Scan** to discover Sonos devices.
-2. Select one or more devices.
+1. Click **Scan** to discover Sonos devices (uses deep scan logic).
+2. Devices are auto-selected by default (deselect if needed).
 3. Paste a YouTube URL and click **Broadcast**.
 4. Adjust volume from the device cards.
 
@@ -88,10 +88,11 @@ The project includes a lightweight Chrome extension under `extension/` that can 
 
 ### Use the Extension
 
-- **Scan** (uses `/scan`, same as Deep Scan)
+- **Scan** (uses `/scan` deep scan)
 - Select devices and adjust volume
 - Paste a YouTube URL and click **Start Broadcast**
 - Use **Pause** / **Stop** to control playback
+- Shows estimated progress while playing (if duration is available)
 
 ## API Endpoints
 
