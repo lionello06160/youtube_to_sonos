@@ -22,6 +22,8 @@ const log = (msg) => {
     logs.push(line);
     if (logs.length > 100) logs.shift();
 };
+const isEpipe = (err) =>
+    !!err && (err.code === 'EPIPE' || String(err.message || '').includes('EPIPE'));
 
 log(`BOOT: Starting Sonons v${VERSION}...`);
 
@@ -282,6 +284,10 @@ app.get('/sonons.mp3', async (req, res) => {
         '--no-warnings',
         '--extractor-args', 'youtube:player_client=android,web',
         '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '--retries', '10',
+        '--fragment-retries', '10',
+        '--retry-sleep', '1',
+        '--socket-timeout', '10',
         '-f', 'bestaudio/best',
         '-o', '-',
         currentYoutubeUrl
@@ -307,6 +313,22 @@ app.get('/sonons.mp3', async (req, res) => {
         ff.kill();
     });
 
+    res.on('error', (e) => {
+        if (isEpipe(e)) {
+            log(`STREAM EPIPE (client closed).`);
+            yt.kill();
+            ff.kill();
+            return;
+        }
+        log(`RES Error: ${e.message}`);
+    });
+    ff.stdout.on('error', (e) => {
+        if (isEpipe(e)) {
+            log(`FF stdout EPIPE (client closed).`);
+            return;
+        }
+        log(`FF stdout error: ${e.message}`);
+    });
     yt.on('error', (e) => log(`YT Error: ${e.message}`));
     ff.on('error', (e) => log(`FF Error: ${e.message}`));
     yt.on('close', (code, signal) => {
@@ -323,4 +345,10 @@ app.listen(PORT, '0.0.0.0', () => {
     log(`Sonons v${VERSION} Ready.`);
 });
 
-process.on('uncaughtException', (err) => log(`CRITICAL: ${err.message}`));
+process.on('uncaughtException', (err) => {
+    if (isEpipe(err)) {
+        log('WARN: EPIPE ignored (client disconnected).');
+        return;
+    }
+    log(`CRITICAL: ${err.message}`);
+});
