@@ -67,6 +67,17 @@ const PlayOneIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+function formatTime(seconds: number) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const hrs = Math.floor(mins / 60);
+  const mm = mins % 60;
+  if (hrs > 0) {
+    return `${hrs}:${String(mm).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${mm}:${String(secs).padStart(2, '0')}`;
+}
+
 function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedHosts, setSelectedHosts] = useState<string[]>([]);
@@ -80,7 +91,10 @@ function App() {
     isPlaying: boolean;
     activeStreams: number;
     startedAt: number | null;
+    durationSec: number | null;
+    durationLabel: string | null;
   } | null>(null);
+  const [tick, setTick] = useState(0);
 
   const selectedMaster = selectedHosts[0];
   const onlineCount = devices.length;
@@ -96,6 +110,7 @@ function App() {
     try {
       const res = await axios.get(`${API_URL}/scan`);
       setDevices(res.data);
+      setSelectedHosts(res.data.map((device: Device) => device.host));
       if (res.data.length === 0) {
         setError('No devices found even after deep scan.');
       }
@@ -127,6 +142,11 @@ function App() {
       mounted = false;
       clearInterval(id);
     };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
   }, []);
 
   const handleVolumeChange = async (host: string, newVolume: number) => {
@@ -203,6 +223,17 @@ function App() {
     { label: 'Playback', value: nowPlaying?.isPlaying ? 'LIVE' : 'IDLE', note: nowPlaying?.isPlaying ? 'Broadcast' : 'Standby' },
   ]), [onlineCount, selectedHosts.length, nowPlaying?.isPlaying]);
 
+  const progress = (() => {
+    if (!nowPlaying?.startedAt || !nowPlaying?.durationSec) return null;
+    const elapsed = Math.max(0, Math.floor((Date.now() - nowPlaying.startedAt) / 1000));
+    const percent = Math.min(100, (elapsed / nowPlaying.durationSec) * 100);
+    return {
+      elapsed,
+      duration: nowPlaying.durationSec,
+      percent
+    };
+  })();
+
   return (
     <div className="font-display min-h-screen flex bg-background-dark text-white">
       <div className="bg-mesh" />
@@ -247,131 +278,131 @@ function App() {
         {/* Scrollable Area */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-6xl mx-auto px-4 md:px-8 py-8 space-y-8">
-          {/* Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {stats.map((item) => (
-              <div key={item.label} className="glass p-6 rounded-2xl flex flex-col gap-1">
-                <span className="text-white/40 text-xs font-bold uppercase tracking-widest">{item.label}</span>
-                <div className="flex items-end gap-2">
-                  <span className="text-2xl font-bold text-white">{item.value}</span>
-                  <span className="text-emerald-500 text-sm mb-1 font-medium">{item.note}</span>
+            {/* Stats */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {stats.map((item) => (
+                <div key={item.label} className="glass p-6 rounded-2xl flex flex-col gap-1">
+                  <span className="text-white/40 text-xs font-bold uppercase tracking-widest">{item.label}</span>
+                  <div className="flex items-end gap-2">
+                    <span className="text-2xl font-bold text-white">{item.value}</span>
+                    <span className="text-emerald-500 text-sm mb-1 font-medium">{item.note}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Device Grid */}
-          <div>
-            <div className="flex items-center justify-between mb-6 px-1">
-              <h3 className="text-white text-lg font-bold">Discovered Devices</h3>
-              <div className="flex gap-4">
-                <button
-                  onClick={selectAll}
-                  className="text-white/40 hover:text-white text-xs font-bold uppercase transition-colors tracking-widest"
-                >
-                  Select All
-                </button>
-                <button
-                  onClick={deselectAll}
-                  className="text-white/40 hover:text-white text-xs font-bold uppercase transition-colors tracking-widest"
-                >
-                  Deselect
-                </button>
-              </div>
+              ))}
             </div>
 
-            {error && (
-              <div className="glass border border-rose-500/20 text-rose-200 px-4 py-3 rounded-xl mb-6">
-                {error}
-              </div>
-            )}
-
-            {devices.length === 0 && !discovering ? (
-              <div className="glass p-12 rounded-2xl text-center border border-white/10">
-                <div className="mx-auto size-16 rounded-2xl bg-white/5 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-white/40 text-4xl">layers</span>
+            {/* Device Grid */}
+            <div>
+              <div className="flex items-center justify-between mb-6 px-1">
+                <h3 className="text-white text-lg font-bold">Discovered Devices</h3>
+                <div className="flex gap-4">
+                  <button
+                    onClick={selectAll}
+                    className="text-white/40 hover:text-white text-xs font-bold uppercase transition-colors tracking-widest"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    onClick={deselectAll}
+                    className="text-white/40 hover:text-white text-xs font-bold uppercase transition-colors tracking-widest"
+                  >
+                    Deselect
+                  </button>
                 </div>
-                <h3 className="text-white text-lg font-bold mt-6">Ambient Silence</h3>
-                <p className="text-white/40 text-sm mt-2">No Sonos active right now. Try a deep scan.</p>
-                <button
-                  onClick={fetchDeep}
-                  className="mt-6 px-6 py-2.5 rounded-xl bg-white text-black font-bold text-xs uppercase tracking-widest"
-                >
-                  Scan Network
-                </button>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-                {discovering && devices.length === 0 && (
-                  <div className="glass p-5 rounded-2xl border-white/5 animate-pulse">
-                    <div className="flex gap-4 mb-6">
-                      <div className="size-20 bg-white/5 rounded-xl"></div>
-                      <div className="flex-1 flex flex-col justify-center gap-2">
-                        <div className="h-4 bg-white/10 rounded w-3/4"></div>
-                        <div className="h-3 bg-white/5 rounded w-1/2"></div>
-                      </div>
-                    </div>
-                    <div className="h-1 bg-white/5 rounded-full w-full"></div>
-                  </div>
-                )}
 
-                {devices.map((device) => {
-                  const isSelected = selectedHosts.includes(device.host);
-                  const isMaster = device.host === selectedMaster;
-                  return (
-                    <div
-                      key={device.host}
-                      onClick={() => toggleSelect(device.host)}
-                      className={`device-card glass p-5 rounded-2xl relative cursor-pointer transition-all ${isSelected ? 'neon-border-primary' : 'border-white/10 hover:border-white/20'} ${isSelected && nowPlaying?.isPlaying ? 'playing-glow' : ''}`}
-                    >
-                      {isSelected && (
-                        <div className="absolute top-4 right-4 text-primary flex items-center gap-2">
-                          {isMaster && (
-                            <span className="text-[10px] uppercase tracking-widest bg-primary/20 px-2 py-1 rounded-full">Master</span>
-                          )}
-                          <span className="material-symbols-outlined fill-1">check_circle</span>
-                        </div>
-                      )}
+              {error && (
+                <div className="glass border border-rose-500/20 text-rose-200 px-4 py-3 rounded-xl mb-6">
+                  {error}
+                </div>
+              )}
+
+              {devices.length === 0 && !discovering ? (
+                <div className="glass p-12 rounded-2xl text-center border border-white/10">
+                  <div className="mx-auto size-16 rounded-2xl bg-white/5 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-white/40 text-4xl">layers</span>
+                  </div>
+                  <h3 className="text-white text-lg font-bold mt-6">Ambient Silence</h3>
+                  <p className="text-white/40 text-sm mt-2">No Sonos active right now. Try a deep scan.</p>
+                  <button
+                    onClick={fetchDeep}
+                    className="mt-6 px-6 py-2.5 rounded-xl bg-white text-black font-bold text-xs uppercase tracking-widest"
+                  >
+                    Scan Network
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                  {discovering && devices.length === 0 && (
+                    <div className="glass p-5 rounded-2xl border-white/5 animate-pulse">
                       <div className="flex gap-4 mb-6">
-                        <div className={`speaker-badge size-20 rounded-xl flex items-center justify-center border ${isSelected ? 'bg-primary/20 border-primary/30' : 'bg-white/5 border-white/10'}`}>
-                          <PlayOneIcon className="w-12 h-16" />
-                          {isSelected && (
-                            <span className="speaker-pulse" />
-                          )}
+                        <div className="size-20 bg-white/5 rounded-xl"></div>
+                        <div className="flex-1 flex flex-col justify-center gap-2">
+                          <div className="h-4 bg-white/10 rounded w-3/4"></div>
+                          <div className="h-3 bg-white/5 rounded w-1/2"></div>
                         </div>
-                        <div className="flex flex-col justify-center">
-                          <h4 className="text-white font-bold">{device.name}</h4>
-                          <p className="text-white/40 text-xs font-medium uppercase tracking-tight">Model: {device.model}</p>
-                          <p className="text-white/40 text-[10px] font-mono mt-1">IP: {device.host}</p>
-                          <div className={`equalizer mt-3 ${isSelected ? 'is-active' : 'is-idle'}`}>
-                            <span className="equalizer-bar bar-1" />
-                            <span className="equalizer-bar bar-2" />
-                            <span className="equalizer-bar bar-3" />
-                            <span className="equalizer-bar bar-4" />
-                            <span className="equalizer-bar bar-5" />
+                      </div>
+                      <div className="h-1 bg-white/5 rounded-full w-full"></div>
+                    </div>
+                  )}
+
+                  {devices.map((device) => {
+                    const isSelected = selectedHosts.includes(device.host);
+                    const isMaster = device.host === selectedMaster;
+                    return (
+                      <div
+                        key={device.host}
+                        onClick={() => toggleSelect(device.host)}
+                        className={`device-card glass p-5 rounded-2xl relative cursor-pointer transition-all ${isSelected ? 'neon-border-primary' : 'border-white/10 hover:border-white/20'} ${isSelected && nowPlaying?.isPlaying ? 'playing-glow' : ''}`}
+                      >
+                        {isSelected && (
+                          <div className="absolute top-4 right-4 text-primary flex items-center gap-2">
+                            {isMaster && (
+                              <span className="text-[10px] uppercase tracking-widest bg-primary/20 px-2 py-1 rounded-full">Master</span>
+                            )}
+                            <span className="material-symbols-outlined fill-1">check_circle</span>
+                          </div>
+                        )}
+                        <div className="flex gap-4 mb-6">
+                          <div className={`speaker-badge size-20 rounded-xl flex items-center justify-center border ${isSelected ? 'bg-primary/20 border-primary/30' : 'bg-white/5 border-white/10'}`}>
+                            <PlayOneIcon className="w-12 h-16" />
+                            {isSelected && (
+                              <span className="speaker-pulse" />
+                            )}
+                          </div>
+                          <div className="flex flex-col justify-center">
+                            <h4 className="text-white font-bold">{device.name}</h4>
+                            <p className="text-white/40 text-xs font-medium uppercase tracking-tight">Model: {device.model}</p>
+                            <p className="text-white/40 text-[10px] font-mono mt-1">IP: {device.host}</p>
+                            <div className={`equalizer mt-3 ${isSelected ? 'is-active' : 'is-idle'}`}>
+                              <span className="equalizer-bar bar-1" />
+                              <span className="equalizer-bar bar-2" />
+                              <span className="equalizer-bar bar-3" />
+                              <span className="equalizer-bar bar-4" />
+                              <span className="equalizer-bar bar-5" />
+                            </div>
                           </div>
                         </div>
-                      </div>
-                      <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-white/60">Volume</span>
-                          <span className={`font-bold ${isSelected ? 'text-primary' : 'text-white/40'}`}>{device.volume}%</span>
+                        <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-white/60">Volume</span>
+                            <span className={`font-bold ${isSelected ? 'text-primary' : 'text-white/40'}`}>{device.volume}%</span>
+                          </div>
+                          <input
+                            className="w-full"
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={device.volume}
+                            onChange={(e) => handleVolumeChange(device.host, Number(e.target.value))}
+                          />
                         </div>
-                        <input
-                          className="w-full"
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={device.volume}
-                          onChange={(e) => handleVolumeChange(device.host, Number(e.target.value))}
-                        />
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -382,7 +413,7 @@ function App() {
               <div className="size-12 rounded-xl bg-red-500/10 flex items-center justify-center border border-red-500/20">
                 <span className="material-symbols-outlined text-red-500">video_library</span>
               </div>
-              <div>
+              <div className="min-w-[220px]">
                 <h4 className="text-white font-bold text-sm leading-tight">YouTube Broadcast</h4>
                 <p className="text-white/40 text-xs">Broadcast audio to selected devices</p>
                 <div className="flex items-center gap-2 mt-2 text-xs text-white/60 max-w-[320px]">
@@ -390,6 +421,20 @@ function App() {
                   <span className="truncate">
                     {nowPlaying?.title ? `Now: ${nowPlaying.title}` : 'Idle'}
                   </span>
+                </div>
+                <div className="mt-2 w-full">
+                  <div className="progress-track">
+                    <div
+                      className={`progress-bar ${progress ? '' : 'is-indeterminate'}`}
+                      style={progress ? { width: `${progress.percent}%` } : undefined}
+                    />
+                  </div>
+                  {progress && (
+                    <div className="mt-1 flex justify-between text-[10px] text-white/50 font-mono">
+                      <span>{formatTime(progress.elapsed)}</span>
+                      <span>{nowPlaying?.durationLabel || formatTime(progress.duration)}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

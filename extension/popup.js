@@ -1,10 +1,16 @@
 const DEFAULT_URL = 'http://10.10.4.213:3005';
 
 const statusPill = document.getElementById('statusPill');
+const statusText = document.getElementById('statusText');
+const statusDot = document.getElementById('statusDot');
 const nowPlaying = document.getElementById('nowPlaying');
 const serverUrl = document.getElementById('serverUrl');
 const deviceList = document.getElementById('deviceList');
 const toast = document.getElementById('toast');
+const progressWrap = document.getElementById('progressWrap');
+const progressBar = document.getElementById('progressBar');
+const progressElapsed = document.getElementById('progressElapsed');
+const progressDuration = document.getElementById('progressDuration');
 
 const scanBtn = document.getElementById('scanBtn');
 const playBtn = document.getElementById('playBtn');
@@ -18,6 +24,46 @@ const openOptions = document.getElementById('openOptions');
 let apiUrl = DEFAULT_URL;
 let devices = [];
 let selectedHosts = [];
+let lastStatus = null;
+
+const formatTime = (seconds) => {
+  if (!Number.isFinite(seconds)) return '--:--';
+  const total = Math.max(0, Math.floor(seconds));
+  const hrs = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hrs > 0) {
+    return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+  return `${mins}:${String(secs).padStart(2, '0')}`;
+};
+
+const updateProgress = (data) => {
+  if (!progressBar) return;
+
+  if (!data || !data.isPlaying) {
+    progressBar.classList.remove('is-indeterminate');
+    progressBar.style.width = '0%';
+    progressElapsed.textContent = '0:00';
+    progressDuration.textContent = '--:--';
+    return;
+  }
+
+  if (!data.startedAt || !data.durationSec) {
+    progressBar.classList.add('is-indeterminate');
+    progressBar.style.width = '';
+    progressElapsed.textContent = '--:--';
+    progressDuration.textContent = data.durationLabel || '--:--';
+    return;
+  }
+
+  progressBar.classList.remove('is-indeterminate');
+  const elapsed = Math.max(0, Math.min(data.durationSec, (Date.now() - data.startedAt) / 1000));
+  const percent = Math.min(100, (elapsed / data.durationSec) * 100);
+  progressBar.style.width = `${percent}%`;
+  progressElapsed.textContent = formatTime(elapsed);
+  progressDuration.textContent = data.durationLabel || formatTime(data.durationSec);
+};
 
 const showToast = (message) => {
   toast.textContent = message;
@@ -58,7 +104,7 @@ const renderDevices = () => {
       </div>
       <div class="device-meta">${device.model} · ${device.host}</div>
       <div class="volume">
-        <span>${device.volume}%</span>
+        <span class="volume-value">${device.volume}%</span>
         <input type="range" min="0" max="100" value="${device.volume}" />
       </div>
     `;
@@ -73,10 +119,14 @@ const renderDevices = () => {
     });
 
     const slider = card.querySelector('input');
+    const volumeValue = card.querySelector('.volume-value');
     slider.addEventListener('click', (e) => e.stopPropagation());
     slider.addEventListener('input', async (e) => {
       const value = Number(e.target.value);
       device.volume = value;
+      if (volumeValue) {
+        volumeValue.textContent = `${value}%`;
+      }
       try {
         await request('/volume', {
           method: 'POST',
@@ -96,6 +146,7 @@ const fetchDevices = async () => {
   try {
     const res = await request('/scan');
     devices = await res.json();
+    selectedHosts = devices.map((d) => d.host);
     renderDevices();
   } catch (err) {
     showToast('Scan failed');
@@ -106,12 +157,18 @@ const fetchStatus = async () => {
   try {
     const res = await request('/status');
     const data = await res.json();
-    statusPill.textContent = data.isPlaying ? 'LIVE' : 'IDLE';
+    lastStatus = data;
+    statusText.textContent = data.isPlaying ? 'LIVE' : 'IDLE';
     statusPill.style.background = data.isPlaying ? 'rgba(34,197,94,0.2)' : 'rgba(255,255,255,0.08)';
+    statusDot.classList.toggle('live', Boolean(data.isPlaying));
     nowPlaying.textContent = data.title ? `Now: ${data.title}` : 'Now: -';
+    updateProgress(data);
   } catch {
-    statusPill.textContent = 'OFFLINE';
+    statusText.textContent = 'OFFLINE';
     nowPlaying.textContent = 'Now: -';
+    statusDot.classList.remove('live');
+    lastStatus = null;
+    updateProgress(null);
   }
 };
 
@@ -186,4 +243,9 @@ openOptions.addEventListener('click', () => chrome.runtime.openOptionsPage());
   await fetchDevices();
   await fetchStatus();
   setInterval(fetchStatus, 5000);
+  setInterval(() => {
+    if (lastStatus) {
+      updateProgress(lastStatus);
+    }
+  }, 1000);
 })();

@@ -20,8 +20,20 @@
     </header>
 
     <section class="status">
-      <div class="status-pill" id="statusPill">Idle</div>
+      <div class="status-pill" id="statusPill">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Idle</span>
+      </div>
       <div class="now-playing" id="nowPlaying">Now: -</div>
+      <div class="progress" id="progressWrap">
+        <div class="progress-track">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <div class="progress-meta">
+          <span id="progressElapsed">0:00</span>
+          <span id="progressDuration">--:--</span>
+        </div>
+      </div>
       <div class="server" id="serverUrl">Server: -</div>
     </section>
 

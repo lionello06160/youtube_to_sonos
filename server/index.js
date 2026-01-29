@@ -14,6 +14,8 @@ const VERSION = '8.0 (Clean URI)';
 // This allows us to give Sonos a clean URL without messy query params
 let currentYoutubeUrl = '';
 let currentTitle = 'Sonons Stream';
+let currentDurationSec = null;
+let currentDurationLabel = null;
 let lastPlayback = null;
 let restartTimer = null;
 let restartAttempts = 0;
@@ -34,8 +36,30 @@ const log = (msg) => {
     logs.push(line);
     if (logs.length > 100) logs.shift();
 };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isEpipe = (err) =>
     !!err && (err.code === 'EPIPE' || String(err.message || '').includes('EPIPE'));
+const isRetryableUpnp = (err) => {
+    const msg = String(err?.message || err || '');
+    return /ClientUPnPError1023|statusCode\s*500|upnp|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i.test(msg);
+};
+const withRetry = async (fn, { label, attempts = 3, baseDelay = 300 } = {}) => {
+    let lastErr;
+    for (let i = 0; i < attempts; i += 1) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            const retryable = isRetryableUpnp(err);
+            if (!retryable || i === attempts - 1) {
+                throw err;
+            }
+            log(`[WARN] ${label || 'UPnP'} failed, retrying (${i + 1}/${attempts}): ${err.message}`);
+            await sleep(baseDelay * (i + 1));
+        }
+    }
+    throw lastErr;
+};
 const scheduleRestart = (reason) => {
     if (!lastPlayback) return;
     const age = Date.now() - lastPlayback.startedAt;
@@ -56,8 +80,11 @@ const scheduleRestart = (reason) => {
         try {
             const device = new Sonos(lastPlayback.deviceHost);
             log(`- Auto-restart attempt ${restartAttempts}`);
-            await device.setAVTransportURI({ uri: lastPlayback.uri, metadata: lastPlayback.metadata, onlySetUri: true });
-            await device.play();
+            await withRetry(
+                () => device.setAVTransportURI({ uri: lastPlayback.uri, metadata: lastPlayback.metadata, onlySetUri: true }),
+                { label: 'Auto-restart setAVTransportURI', attempts: 3, baseDelay: 400 }
+            );
+            await withRetry(() => device.play(), { label: 'Auto-restart play', attempts: 3, baseDelay: 400 });
         } catch (err) {
             log(`[WARN] Auto-restart failed: ${err.message}`);
         }
@@ -87,6 +114,8 @@ const scheduleDailyStop = () => {
             currentYoutubeUrl = '';
             currentDirectUrl = '';
             currentDirectUrlAt = 0;
+            currentDurationSec = null;
+            currentDurationLabel = null;
             scheduleDailyStop();
         }
     }, delay);
@@ -232,7 +261,11 @@ app.post('/group', async (req, res) => {
         const masterName = await getZoneNameByHost(masterHost);
         const masterDevice = new Sonos(masterHost);
         try {
-            await masterDevice.becomeCoordinatorOfStandaloneGroup();
+            await withRetry(() => masterDevice.becomeCoordinatorOfStandaloneGroup(), {
+                label: 'Master leave group',
+                attempts: 3,
+                baseDelay: 400
+            });
         } catch (err) {
             log(`[WARN] Master leave group failed: ${err.message}`);
         }
@@ -241,7 +274,11 @@ app.post('/group', async (req, res) => {
         for (const host of members) {
             try {
                 const memberDevice = new Sonos(host);
-                await memberDevice.joinGroup(masterName);
+                await withRetry(() => memberDevice.joinGroup(masterName), {
+                    label: `Join group ${host}`,
+                    attempts: 3,
+                    baseDelay: 400
+                });
                 log(`- Joined ${host} -> ${masterName}`);
             } catch (err) {
                 log(`[WARN] Join failed for ${host}: ${err.message}`);
@@ -270,17 +307,26 @@ app.post('/play', async (req, res) => {
             log(`- Coordinator resolved: ${deviceHost} -> ${coordinatorHost}`);
         }
         const device = new Sonos(coordinatorHost);
+        try {
+            await withRetry(() => device.stop(), { label: 'Preflight stop', attempts: 2, baseDelay: 300 });
+        } catch (err) {
+            log(`[WARN] Preflight stop failed: ${err.message}`);
+        }
         const ytExtractorArgs = 'youtube:player_client=android,web';
         const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
         const { stdout } = await execPromise(
-            `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" "${youtubeUrl}"`,
+            `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${youtubeUrl}"`,
             { maxBuffer: 1024 * 1024 }
         );
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
         const title = lines[0] || 'Sonons Audio';
         const art = lines[1] || '';
+        const durationSec = Number(lines[2]);
+        const durationLabel = lines[3] || null;
 
         currentTitle = title;
+        currentDurationSec = Number.isFinite(durationSec) ? durationSec : null;
+        currentDurationLabel = durationLabel;
         const normalizedTitle = truncate(normalizeTitle(title), 120);
         const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
         const safeTitle = escapeXml(normalizedTitle);
@@ -314,9 +360,12 @@ app.post('/play', async (req, res) => {
         for (const option of candidates) {
             try {
                 log(`- Trying AVTransport: ${option.label}`);
-                await device.setAVTransportURI({ uri: option.uri, metadata: option.metadata, onlySetUri: true });
+                await withRetry(
+                    () => device.setAVTransportURI({ uri: option.uri, metadata: option.metadata, onlySetUri: true }),
+                    { label: `Set AVTransport (${option.label})`, attempts: 3, baseDelay: 400 }
+                );
                 log(`- Starting playback...`);
-                await device.play();
+                await withRetry(() => device.play(), { label: 'Play', attempts: 3, baseDelay: 400 });
                 log(`[SUCCESS] Device accepted: ${option.label}`);
                 lastPlayback = {
                     deviceHost: coordinatorHost,
@@ -368,7 +417,7 @@ app.post('/pause', async (req, res) => {
     try {
         const host = await resolveCoordinatorHost(deviceHost);
         const device = new Sonos(host);
-        await device.pause();
+        await withRetry(() => device.pause(), { label: 'Pause', attempts: 2, baseDelay: 300 });
         restartAttempts = 0;
         lastPlayback = null;
         res.send({ status: 'paused' });
@@ -387,9 +436,11 @@ app.post('/stop', async (req, res) => {
     try {
         const host = await resolveCoordinatorHost(deviceHost);
         const device = new Sonos(host);
-        await device.stop();
+        await withRetry(() => device.stop(), { label: 'Stop', attempts: 2, baseDelay: 300 });
         currentYoutubeUrl = '';
         currentTitle = 'Sonons Stream';
+        currentDurationSec = null;
+        currentDurationLabel = null;
         currentDirectUrl = '';
         currentDirectUrlAt = 0;
         activeStreamCount = 0;
@@ -410,7 +461,9 @@ app.get('/status', (req, res) => {
         isPlaying: !!currentYoutubeUrl && activeStreamCount > 0,
         activeStreams: activeStreamCount,
         startedAt: lastPlayback?.startedAt || null,
-        deviceHost: lastPlayback?.deviceHost || null
+        deviceHost: lastPlayback?.deviceHost || null,
+        durationSec: currentDurationSec,
+        durationLabel: currentDurationLabel
     });
 });
 
