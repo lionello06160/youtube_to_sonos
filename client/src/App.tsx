@@ -239,7 +239,7 @@ function App() {
     { label: 'Playback', value: nowPlaying?.isPlaying ? 'LIVE' : 'IDLE', note: nowPlaying?.isPlaying ? 'Broadcast' : 'Standby' },
   ]), [onlineCount, selectedHosts.length, nowPlaying?.isPlaying]);
 
-  const progress = (() => {
+  const progress = useMemo(() => {
     if (!nowPlaying?.startedAt || !nowPlaying?.durationSec) return null;
     const elapsed = Math.max(0, Math.floor((Date.now() - nowPlaying.startedAt) / 1000));
     const percent = Math.min(100, (elapsed / nowPlaying.durationSec) * 100);
@@ -248,7 +248,7 @@ function App() {
       duration: nowPlaying.durationSec,
       percent
     };
-  })();
+  }, [nowPlaying?.startedAt, nowPlaying?.durationSec, tick]);
 
   return (
     <div className="font-display min-h-screen flex bg-background-dark text-white">
