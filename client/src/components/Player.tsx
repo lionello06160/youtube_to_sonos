@@ -26,7 +26,7 @@ export const Player: React.FC<PlayerProps> = ({ onPlay, isLoading, activeDeviceC
                 <div className="flex flex-col md:flex-row items-center gap-4 px-6 py-4">
 
                     {/* Status Icon */}
-                    <div className="hidden lg:flex items-center justify-center w-12 h-12 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                    <div className="hidden lg:flex items-center justify-center w-12 h-12 rounded-2xl bg-primary/10 text-primary border border-primary/20">
                         {isLoading ? <RefreshCw className="animate-spin" size={20} /> : <Zap size={20} fill="currentColor" />}
                     </div>
 
@@ -37,7 +37,7 @@ export const Player: React.FC<PlayerProps> = ({ onPlay, isLoading, activeDeviceC
                                 <input
                                     type="text"
                                     placeholder="Paste YouTube audio uplink..."
-                                    className="w-full bg-white/5 border border-white/10 text-white rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 transition-all text-sm font-medium placeholder:text-zinc-600"
+                                    className="w-full bg-white/5 border border-white/10 text-white rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all text-sm font-medium placeholder:text-zinc-600"
                                     value={url}
                                     onChange={(e) => setUrl(e.target.value)}
                                 />
@@ -49,7 +49,7 @@ export const Player: React.FC<PlayerProps> = ({ onPlay, isLoading, activeDeviceC
                             <button
                                 type="submit"
                                 disabled={isLoading || !url || activeDeviceCount === 0}
-                                className="w-full md:w-auto bg-indigo-500 hover:bg-indigo-400 disabled:opacity-20 disabled:grayscale disabled:cursor-not-allowed text-white h-[52px] px-8 rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg shadow-indigo-500/20 whitespace-nowrap"
+                                className="w-full md:w-auto bg-primary hover:bg-primary/90 disabled:opacity-20 disabled:grayscale disabled:cursor-not-allowed text-white h-[52px] px-8 rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-3 transition-all active:scale-95 shadow-lg shadow-[0_0_20px_rgba(34,197,94,0.35)] whitespace-nowrap"
                             >
                                 {isLoading ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} fill="currentColor" />}
                                 Broadcast
@@ -60,7 +60,7 @@ export const Player: React.FC<PlayerProps> = ({ onPlay, isLoading, activeDeviceC
                     {/* Metadata / Stats */}
                     <div className="flex items-center gap-6 text-[10px] font-black uppercase tracking-widest text-zinc-500 h-full border-l border-white/10 pl-6 hidden md:flex">
                         <div className="flex items-center gap-2">
-                            <div className={`w-1.5 h-1.5 rounded-full ${activeDeviceCount > 0 ? 'bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,1)]' : 'bg-zinc-700'}`} />
+                            <div className={`w-1.5 h-1.5 rounded-full ${activeDeviceCount > 0 ? 'bg-primary shadow-[0_0_8px_rgba(34,197,94,0.8)]' : 'bg-zinc-700'}`} />
                             <span>{activeDeviceCount} Zones</span>
                         </div>
                         <div className="text-zinc-700">|</div>

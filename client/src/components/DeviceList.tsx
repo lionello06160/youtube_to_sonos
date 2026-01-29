@@ -44,7 +44,7 @@ export function DeviceList({ devices, selectedHosts, onToggleSelect, onVolumeCha
                             "group relative p-6 rounded-[2rem] cursor-pointer transition-all duration-500",
                             "border bg-gradient-to-br transition-colors",
                             isSelected
-                                ? "border-blue-500/50 bg-blue-500/10 shadow-[0_0_40px_-10px_rgba(59,130,246,0.3)]"
+                                ? "border-primary/50 bg-primary/10 shadow-[0_0_40px_-10px_rgba(34,197,94,0.3)]"
                                 : "border-white/5 bg-white/5 hover:border-white/20"
                         )}
                     >
@@ -61,7 +61,7 @@ export function DeviceList({ devices, selectedHosts, onToggleSelect, onVolumeCha
                                             delay: i * 0.1,
                                             ease: "easeInOut"
                                         }}
-                                        className="w-1 bg-blue-400 rounded-full"
+                                        className="w-1 bg-primary rounded-full"
                                     />
                                 ))}
                             </div>
@@ -70,13 +70,13 @@ export function DeviceList({ devices, selectedHosts, onToggleSelect, onVolumeCha
                         <div className="flex items-start gap-4 mb-6">
                             <div className={cn(
                                 "w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-300",
-                                isSelected ? "bg-blue-500 shadow-lg shadow-blue-500/50" : "bg-white/10 group-hover:bg-white/15"
+                                isSelected ? "bg-primary shadow-lg shadow-[0_0_20px_rgba(34,197,94,0.5)]" : "bg-white/10 group-hover:bg-white/15"
                             )}>
                                 <Speaker className={cn("w-7 h-7", isSelected ? "text-white" : "text-white/60")} />
                             </div>
 
                             <div>
-                                <h3 className="font-bold text-lg text-white group-hover:text-blue-200 transition-colors">
+                                <h3 className="font-bold text-lg text-white group-hover:text-primary/80 transition-colors">
                                     {device.name}
                                 </h3>
                                 <p className="text-xs text-white/40 font-medium uppercase tracking-widest flex items-center gap-2">
@@ -113,7 +113,7 @@ export function DeviceList({ devices, selectedHosts, onToggleSelect, onVolumeCha
                                     initial={false}
                                     animate={{ width: `${device.volume}%` }}
                                     className={cn(
-                                        "absolute top-0 left-0 h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all",
+                                        "absolute top-0 left-0 h-full bg-gradient-to-r from-primary to-emerald-400 transition-all",
                                         isSelected ? "opacity-100" : "opacity-40"
                                     )}
                                 />

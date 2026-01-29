@@ -22,6 +22,10 @@ const RESTART_WINDOW_MS = 20000;
 let currentDirectUrl = '';
 let currentDirectUrlAt = 0;
 const DIRECT_URL_TTL_MS = 5 * 60 * 1000;
+let activeStreamCount = 0;
+const DAILY_STOP_HOUR = 17;
+const DAILY_STOP_MINUTE = 0;
+let dailyStopTimer = null;
 
 const logs = [];
 const log = (msg) => {
@@ -60,6 +64,34 @@ const scheduleRestart = (reason) => {
     }, delay);
 };
 
+const scheduleDailyStop = () => {
+    if (dailyStopTimer) clearTimeout(dailyStopTimer);
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(DAILY_STOP_HOUR, DAILY_STOP_MINUTE, 0, 0);
+    if (next <= now) {
+        next.setDate(next.getDate() + 1);
+    }
+    const delay = next.getTime() - now.getTime();
+    log(`Daily stop scheduled for ${next.toLocaleString()}`);
+    dailyStopTimer = setTimeout(async () => {
+        try {
+            if (lastPlayback?.deviceHost) {
+                const device = new Sonos(lastPlayback.deviceHost);
+                await device.stop();
+                log('Daily stop: playback stopped.');
+            }
+        } catch (err) {
+            log(`[WARN] Daily stop failed: ${err.message}`);
+        } finally {
+            currentYoutubeUrl = '';
+            currentDirectUrl = '';
+            currentDirectUrlAt = 0;
+            scheduleDailyStop();
+        }
+    }, delay);
+};
+
 const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
     const now = Date.now();
     if (currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
@@ -79,6 +111,7 @@ const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
 };
 
 log(`BOOT: Starting Sonons v${VERSION}...`);
+scheduleDailyStop();
 
 const resolveCoordinatorHost = async (deviceHost) => {
     try {
@@ -325,6 +358,62 @@ app.post('/volume', async (req, res) => {
     }
 });
 
+// Pause/Stop
+app.post('/pause', async (req, res) => {
+    const { deviceHost } = req.body;
+    if (!deviceHost) {
+        res.status(400).send('deviceHost required');
+        return;
+    }
+    try {
+        const host = await resolveCoordinatorHost(deviceHost);
+        const device = new Sonos(host);
+        await device.pause();
+        restartAttempts = 0;
+        lastPlayback = null;
+        res.send({ status: 'paused' });
+    } catch (e) {
+        log(`[ERR] Pause: ${e.message}`);
+        res.status(500).send(e.message);
+    }
+});
+
+app.post('/stop', async (req, res) => {
+    const { deviceHost } = req.body;
+    if (!deviceHost) {
+        res.status(400).send('deviceHost required');
+        return;
+    }
+    try {
+        const host = await resolveCoordinatorHost(deviceHost);
+        const device = new Sonos(host);
+        await device.stop();
+        currentYoutubeUrl = '';
+        currentTitle = 'Sonons Stream';
+        currentDirectUrl = '';
+        currentDirectUrlAt = 0;
+        activeStreamCount = 0;
+        restartAttempts = 0;
+        lastPlayback = null;
+        res.send({ status: 'stopped' });
+    } catch (e) {
+        log(`[ERR] Stop: ${e.message}`);
+        res.status(500).send(e.message);
+    }
+});
+
+// Status
+app.get('/status', (req, res) => {
+    res.json({
+        title: currentTitle || null,
+        youtubeUrl: currentYoutubeUrl || null,
+        isPlaying: !!currentYoutubeUrl && activeStreamCount > 0,
+        activeStreams: activeStreamCount,
+        startedAt: lastPlayback?.startedAt || null,
+        deviceHost: lastPlayback?.deviceHost || null
+    });
+});
+
 // THE CLEAN ENDPOINT
 app.get('/sonons.mp3', async (req, res) => {
     log(`SPEAKER CONNECTED to /sonons.mp3`);
@@ -334,6 +423,14 @@ app.get('/sonons.mp3', async (req, res) => {
         res.end();
         return;
     }
+
+    activeStreamCount += 1;
+    let closed = false;
+    const markClosed = () => {
+        if (closed) return;
+        closed = true;
+        activeStreamCount = Math.max(0, activeStreamCount - 1);
+    };
 
     // Impersonate a standard MP3 file/stream
     const headerTitle = String(currentTitle || 'Sonons Stream')
@@ -363,6 +460,7 @@ app.get('/sonons.mp3', async (req, res) => {
         log(`- Direct URL resolved`);
     } catch (err) {
         log(`[ERR] Direct URL failed: ${err.message}`);
+        markClosed();
         res.end();
         return;
     }
@@ -397,6 +495,7 @@ app.get('/sonons.mp3', async (req, res) => {
 
     req.on('close', () => {
         log(`STREAM CLOSED.`);
+        markClosed();
         ff.kill();
         scheduleRestart('client closed');
     });
@@ -404,6 +503,7 @@ app.get('/sonons.mp3', async (req, res) => {
     res.on('error', (e) => {
         if (isEpipe(e)) {
             log(`STREAM EPIPE (client closed).`);
+            markClosed();
             ff.kill();
             scheduleRestart('epipe');
             return;

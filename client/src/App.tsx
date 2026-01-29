@@ -1,22 +1,94 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { DeviceList } from './components/DeviceList';
-import { Player } from './components/Player';
 import type { Device } from './types';
-import { RefreshCw, Radio, Layers, Github, Plus, Search, LayoutDashboard, Settings } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
 
 const API_URL = `http://10.10.4.213:3005`;
+
+const PlayOneIcon = ({ className }: { className?: string }) => (
+  <svg
+    className={className}
+    viewBox="0 0 340 520"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    <defs>
+      <pattern id="gridPattern" x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse">
+        <circle cx="2" cy="2" r="1.2" fill="#222" opacity="0.6" />
+      </pattern>
+      <linearGradient id="bodyGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" style={{ stopColor: '#333', stopOpacity: 1 }} />
+        <stop offset="10%" style={{ stopColor: '#666', stopOpacity: 1 }} />
+        <stop offset="25%" style={{ stopColor: '#999', stopOpacity: 1 }} />
+        <stop offset="50%" style={{ stopColor: '#ccc', stopOpacity: 1 }} />
+        <stop offset="75%" style={{ stopColor: '#999', stopOpacity: 1 }} />
+        <stop offset="90%" style={{ stopColor: '#666', stopOpacity: 1 }} />
+        <stop offset="100%" style={{ stopColor: '#333', stopOpacity: 1 }} />
+      </linearGradient>
+      <linearGradient id="capGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" style={{ stopColor: '#000', stopOpacity: 1 }} />
+        <stop offset="15%" style={{ stopColor: '#333', stopOpacity: 1 }} />
+        <stop offset="50%" style={{ stopColor: '#1a1a1a', stopOpacity: 1 }} />
+        <stop offset="85%" style={{ stopColor: '#333', stopOpacity: 1 }} />
+        <stop offset="100%" style={{ stopColor: '#000', stopOpacity: 1 }} />
+      </linearGradient>
+      <linearGradient id="shadowOverlay" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" style={{ stopColor: '#000', stopOpacity: 0.6 }} />
+        <stop offset="20%" style={{ stopColor: '#000', stopOpacity: 0.1 }} />
+        <stop offset="50%" style={{ stopColor: '#fff', stopOpacity: 0.1 }} />
+        <stop offset="80%" style={{ stopColor: '#000', stopOpacity: 0.1 }} />
+        <stop offset="100%" style={{ stopColor: '#000', stopOpacity: 0.6 }} />
+      </linearGradient>
+      <linearGradient id="reflectionGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+        <stop offset="0%" style={{ stopColor: '#000', stopOpacity: 0.3 }} />
+        <stop offset="100%" style={{ stopColor: '#000', stopOpacity: 0 }} />
+      </linearGradient>
+    </defs>
+
+    <ellipse cx="170" cy="495" rx="140" ry="15" fill="url(#reflectionGrad)" />
+
+    <g transform="translate(20, 40)">
+      <rect x="0" y="40" width="300" height="380" rx="30" ry="30" fill="url(#bodyGradient)" />
+      <rect x="0" y="40" width="300" height="380" rx="30" ry="30" fill="url(#gridPattern)" />
+      <rect x="0" y="40" width="300" height="380" rx="30" ry="30" fill="url(#shadowOverlay)" />
+    </g>
+
+    <g transform="translate(20, 455)">
+      <path d="M5,0 L295,0 C300,0 300,15 295,25 L5,25 C0,25 0,0 5,0 Z" fill="#111" />
+      <path d="M15,25 L285,25 C290,25 290,30 285,35 L15,35 C10,35 10,25 15,25 Z" fill="#000" />
+    </g>
+
+    <g transform="translate(20, 20)">
+      <path d="M0,20 L0,60 L300,60 L300,20 C300,-10 0,-10 0,20 Z" fill="url(#capGradient)" />
+      <path d="M2,20 C2,-5 298,-5 298,20" fill="none" stroke="#555" strokeWidth="1" opacity="0.5" />
+      <g transform="translate(150, 42)" fill="#ddd" style={{ fontFamily: 'Arial, sans-serif', fontWeight: 700, letterSpacing: '3px' }}>
+        <text x="0" y="0" textAnchor="middle" fontSize="18">SONOS</text>
+      </g>
+    </g>
+  </svg>
+);
 
 function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedHosts, setSelectedHosts] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  const [broadcasting, setBroadcasting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [toast, setToast] = useState<string | null>(null);
+  const [nowPlaying, setNowPlaying] = useState<{
+    title: string | null;
+    isPlaying: boolean;
+    activeStreams: number;
+    startedAt: number | null;
+  } | null>(null);
 
-  const [manualIp, setManualIp] = useState('');
-  const [addingManual, setAddingManual] = useState(false);
+  const selectedMaster = selectedHosts[0];
+  const onlineCount = devices.length;
+
+  const showToast = (message: string) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 3500);
+  };
 
   const fetchDevices = async () => {
     setDiscovering(true);
@@ -26,7 +98,6 @@ function App() {
       setDevices(res.data);
     } catch (err: any) {
       setError(err.message || 'Failed to scan network');
-      console.error(err);
     } finally {
       setDiscovering(false);
     }
@@ -52,14 +123,31 @@ function App() {
     fetchDevices();
   }, []);
 
-  const handleVolumeChange = async (host: string, newVolume: number) => {
-    // Update local state immediately for snappy UI
-    setDevices(prev => prev.map(d => d.host === host ? { ...d, volume: newVolume } : d));
+  useEffect(() => {
+    let mounted = true;
+    const fetchStatus = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/status`);
+        if (!mounted) return;
+        setNowPlaying(res.data);
+      } catch {
+        // ignore transient status errors
+      }
+    };
+    fetchStatus();
+    const id = setInterval(fetchStatus, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, []);
 
+  const handleVolumeChange = async (host: string, newVolume: number) => {
+    setDevices(prev => prev.map(d => d.host === host ? { ...d, volume: newVolume } : d));
     try {
       await axios.post(`${API_URL}/volume`, { host, volume: newVolume });
     } catch (err: any) {
-      console.error('Failed to change volume:', err.message);
+      showToast('Volume update failed');
     }
   };
 
@@ -69,27 +157,12 @@ function App() {
     );
   };
 
-  const handleAddManual = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!manualIp) return;
-    setAddingManual(true);
-    try {
-      const res = await axios.post(`${API_URL}/add-device`, { host: manualIp });
-      const newDevice = res.data;
-      if (!devices.find(d => d.host === newDevice.host)) {
-        setDevices(prev => [...prev, newDevice]);
-      }
-      setManualIp('');
-    } catch (err: any) {
-      alert('Failed to add: ' + (err.response?.data || err.message));
-    } finally {
-      setAddingManual(false);
-    }
-  };
+  const selectAll = () => setSelectedHosts(devices.map(d => d.host));
+  const deselectAll = () => setSelectedHosts([]);
 
-  const handlePlay = async (url: string) => {
-    if (selectedHosts.length === 0) return;
-    setLoading(true);
+  const handlePlay = async () => {
+    if (!youtubeUrl || selectedHosts.length === 0) return;
+    setBroadcasting(true);
 
     if (selectedHosts.length > 1) {
       try {
@@ -98,164 +171,301 @@ function App() {
           memberHosts: selectedHosts
         });
       } catch (err) {
-        console.error('Grouping failed', err);
+        showToast('Grouping failed');
       }
     }
 
     try {
       await axios.post(`${API_URL}/play`, {
         deviceHost: selectedHosts[0],
-        youtubeUrl: url
+        youtubeUrl
       });
+      showToast('Broadcast started');
     } catch (err: any) {
-      alert('Playback failed: ' + (err.response?.data || err.message));
+      showToast('Playback failed');
     } finally {
-      setLoading(false);
+      setBroadcasting(false);
     }
   };
 
+  const handlePause = async () => {
+    if (selectedHosts.length === 0) return;
+    try {
+      await axios.post(`${API_URL}/pause`, { deviceHost: selectedHosts[0] });
+      setNowPlaying((prev) => prev ? { ...prev, isPlaying: false } : prev);
+      showToast('Paused');
+    } catch (err: any) {
+      showToast('Pause failed');
+    }
+  };
+
+  const handleStop = async () => {
+    if (selectedHosts.length === 0) return;
+    try {
+      await axios.post(`${API_URL}/stop`, { deviceHost: selectedHosts[0] });
+      setNowPlaying((prev) => prev ? { ...prev, isPlaying: false, title: null } : prev);
+      showToast('Stopped');
+    } catch (err: any) {
+      showToast('Stop failed');
+    }
+  };
+
+  const stats = useMemo(() => ([
+    { label: 'Devices Online', value: `${onlineCount}`, note: onlineCount > 0 ? 'Active' : 'Offline' },
+    { label: 'Selected Zones', value: `${selectedHosts.length}`, note: selectedHosts.length ? 'Ready' : 'None' },
+    { label: 'Playback', value: nowPlaying?.isPlaying ? 'LIVE' : 'IDLE', note: nowPlaying?.isPlaying ? 'Broadcast' : 'Standby' },
+  ]), [onlineCount, selectedHosts.length, nowPlaying?.isPlaying]);
+
   return (
-    <div className="flex h-screen bg-[#09090b] text-zinc-100 overflow-hidden font-sans">
+    <div className="font-display min-h-screen flex bg-background-dark text-white">
       <div className="bg-mesh" />
       <div className="bg-grid" />
+      <div className="ambient-orbs" aria-hidden="true">
+        <span className="orb orb-one" />
+        <span className="orb orb-two" />
+        <span className="orb orb-three" />
+      </div>
 
-      {/* Sidebar Navigation */}
-      <aside className="w-20 hidden md:flex flex-col items-center py-10 border-r border-white/5 bg-black/20 backdrop-blur-3xl z-10">
-        <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-500/20 mb-12">
-          <Radio className="text-white" size={24} />
-        </div>
-
-        <nav className="flex flex-col gap-8">
-          <button className="text-indigo-400 p-3 rounded-xl bg-indigo-500/10 cursor-default">
-            <LayoutDashboard size={24} />
-          </button>
-          <button className="text-zinc-500 p-3 hover:text-white hover:bg-white/5 transition-all rounded-xl">
-            <Settings size={24} />
-          </button>
-        </nav>
-
-        <div className="mt-auto">
-          <a href="https://github.com" target="_blank" className="text-zinc-600 hover:text-white transition-colors">
-            <Github size={20} />
-          </a>
-        </div>
-      </aside>
-
-      {/* Main Content Area */}
-      <main className="flex-1 flex flex-col relative overflow-hidden">
-
-        {/* Header Bar */}
-        <header className="h-24 flex items-center justify-between px-10 border-b border-white/5 bg-black/10 backdrop-blur-md z-10">
-          <div className="flex flex-col">
-            <h1 className="text-2xl font-black italic tracking-tighter uppercase text-white leading-none">Sonons</h1>
-            <span className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Premium OS v1.0</span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Manual Add Input */}
-            <form onSubmit={handleAddManual} className="relative group">
-              <input
-                type="text"
-                placeholder="Connect via IP..."
-                value={manualIp}
-                onChange={(e) => setManualIp(e.target.value)}
-                className="bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-xs w-[200px] focus:w-[260px] focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-zinc-600"
-              />
-              <button
-                disabled={addingManual || !manualIp}
-                className="absolute right-1.5 top-1.5 p-1 bg-indigo-500 rounded-lg text-white disabled:opacity-0 transition-all hover:bg-indigo-400 group-focus-within:opacity-100 opacity-0"
-              >
-                {addingManual ? <RefreshCw size={14} className="animate-spin" /> : <Plus size={14} />}
-              </button>
-            </form>
-
-            <div className="h-6 w-px bg-white/10 mx-2" />
-
-            {/* Scan Buttons */}
-            <div className="flex items-center gap-2">
+      {/* Main Content */}
+      <main className="flex-1 flex flex-col h-screen overflow-hidden">
+        {/* Header */}
+        <header className="glass sticky top-0 z-30 border-b border-white/10">
+          <div className="w-full max-w-6xl mx-auto flex items-center justify-between px-4 md:px-8 py-4">
+            <div className="flex items-center gap-6">
+              <h2 className="text-white text-xl font-bold tracking-tight">System Overview</h2>
+              <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
+                <span className="size-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span className="text-emerald-500 text-xs font-bold uppercase tracking-wider">
+                  {discovering ? 'Scanning' : `${onlineCount} Online`}
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
               <button
                 onClick={fetchDevices}
                 disabled={discovering}
-                className="bg-zinc-800/50 hover:bg-zinc-800 text-zinc-300 p-2.5 rounded-xl border border-white/5 transition-all disabled:opacity-50"
+                className="btn-secondary flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm font-bold hover:bg-white/10 transition-all disabled:opacity-50"
               >
-                <RefreshCw size={18} className={discovering ? 'animate-spin' : ''} />
+                <span className={`material-symbols-outlined text-[18px] ${discovering ? 'animate-spin' : ''}`}>sync</span>
+                Scan
               </button>
               <button
                 onClick={fetchDeep}
                 disabled={discovering}
-                className="bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 px-4 py-2.5 rounded-xl border border-indigo-500/10 transition-all font-bold text-xs uppercase tracking-wider flex items-center gap-2 disabled:opacity-50"
+                className="btn-accent flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent-amber/20 border border-accent-amber/40 text-accent-amber text-sm font-bold hover:bg-accent-amber/30 transition-all neon-glow-amber disabled:opacity-50"
               >
-                <Search size={16} />
+                <span className="material-symbols-outlined text-[18px]">radar</span>
                 Deep Scan
               </button>
+              <div className="h-8 w-[1px] bg-white/10 mx-2"></div>
+              <div className="size-10 rounded-full border border-white/20 p-0.5">
+                <div className="w-full h-full rounded-full bg-gradient-to-br from-white/30 to-white/5"></div>
+              </div>
             </div>
           </div>
         </header>
 
-        {/* Scrollable Viewport */}
-        <div className="flex-1 overflow-y-auto px-10 py-10">
-          <div className="max-w-screen-xl mx-auto space-y-12 pb-32">
-
-            {/* Device Section */}
-            <section>
-              <header className="flex items-baseline justify-between mb-8">
-                <div className="flex items-center gap-3">
-                  <div className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(99,102,241,0.5)]" />
-                  <h2 className="text-xl font-bold tracking-tight text-white">Zone Management</h2>
+        {/* Scrollable Area */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-6xl mx-auto px-4 md:px-8 py-8 space-y-8">
+          {/* Stats */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {stats.map((item) => (
+              <div key={item.label} className="glass p-6 rounded-2xl flex flex-col gap-1">
+                <span className="text-white/40 text-xs font-bold uppercase tracking-widest">{item.label}</span>
+                <div className="flex items-end gap-2">
+                  <span className="text-2xl font-bold text-white">{item.value}</span>
+                  <span className="text-emerald-500 text-sm mb-1 font-medium">{item.note}</span>
                 </div>
-                <span className="text-zinc-500 text-xs font-bold uppercase tracking-widest">{devices.length} Devices Online</span>
-              </header>
+              </div>
+            ))}
+          </div>
 
-              <AnimatePresence mode="wait">
-                {error ? (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="p-12 rounded-[2rem] border border-rose-500/20 bg-rose-500/5 text-center"
-                  >
-                    <div className="text-rose-400 font-bold mb-2">Network Error</div>
-                    <div className="text-zinc-400 text-sm">{error}</div>
-                    <button onClick={fetchDevices} className="mt-6 text-xs uppercase tracking-widest font-black text-rose-500 hover:text-rose-400">Retry Connection</button>
-                  </motion.div>
-                ) : devices.length === 0 && !discovering ? (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="p-24 rounded-[3rem] border border-white/5 bg-white/[0.01] flex flex-col items-center justify-center text-center"
-                  >
-                    <div className="w-20 h-20 rounded-3xl bg-zinc-900 border border-white/5 flex items-center justify-center mb-8 text-zinc-700">
-                      <Layers size={40} />
+          {/* Device Grid */}
+          <div>
+            <div className="flex items-center justify-between mb-6 px-1">
+              <h3 className="text-white text-lg font-bold">Discovered Devices</h3>
+              <div className="flex gap-4">
+                <button
+                  onClick={selectAll}
+                  className="text-white/40 hover:text-white text-xs font-bold uppercase transition-colors tracking-widest"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={deselectAll}
+                  className="text-white/40 hover:text-white text-xs font-bold uppercase transition-colors tracking-widest"
+                >
+                  Deselect
+                </button>
+              </div>
+            </div>
+
+            {error && (
+              <div className="glass border border-rose-500/20 text-rose-200 px-4 py-3 rounded-xl mb-6">
+                {error}
+              </div>
+            )}
+
+            {devices.length === 0 && !discovering ? (
+              <div className="glass p-12 rounded-2xl text-center border border-white/10">
+                <div className="mx-auto size-16 rounded-2xl bg-white/5 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-white/40 text-4xl">layers</span>
+                </div>
+                <h3 className="text-white text-lg font-bold mt-6">Ambient Silence</h3>
+                <p className="text-white/40 text-sm mt-2">No Sonos active right now. Try a deep scan.</p>
+                <button
+                  onClick={fetchDeep}
+                  className="mt-6 px-6 py-2.5 rounded-xl bg-white text-black font-bold text-xs uppercase tracking-widest"
+                >
+                  Initiate Deep Scan
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                {discovering && devices.length === 0 && (
+                  <div className="glass p-5 rounded-2xl border-white/5 animate-pulse">
+                    <div className="flex gap-4 mb-6">
+                      <div className="size-20 bg-white/5 rounded-xl"></div>
+                      <div className="flex-1 flex flex-col justify-center gap-2">
+                        <div className="h-4 bg-white/10 rounded w-3/4"></div>
+                        <div className="h-3 bg-white/5 rounded w-1/2"></div>
+                      </div>
                     </div>
-                    <h3 className="text-2xl font-black text-white mb-2">Ambient Silence</h3>
-                    <p className="text-zinc-500 max-w-sm mb-10 leading-relaxed">No Sonos active in this reality. Try a deep scan or manual IP uplink if your router is shielding them.</p>
-                    <button onClick={fetchDeep} className="bg-white text-black px-8 py-3.5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-zinc-200 transition-all active:scale-95 shadow-xl">Initiate Deep Scan</button>
-                  </motion.div>
-                ) : (
-                  <DeviceList
-                    devices={devices}
-                    selectedHosts={selectedHosts}
-                    onToggleSelect={toggleSelect}
-                    onVolumeChange={handleVolumeChange}
-                  />
+                    <div className="h-1 bg-white/5 rounded-full w-full"></div>
+                  </div>
                 )}
-              </AnimatePresence>
-            </section>
 
+                {devices.map((device) => {
+                  const isSelected = selectedHosts.includes(device.host);
+                  const isMaster = device.host === selectedMaster;
+                  return (
+                    <div
+                      key={device.host}
+                      onClick={() => toggleSelect(device.host)}
+                      className={`device-card glass p-5 rounded-2xl relative cursor-pointer transition-all ${isSelected ? 'neon-border-primary' : 'border-white/10 hover:border-white/20'} ${isSelected && nowPlaying?.isPlaying ? 'playing-glow' : ''}`}
+                    >
+                      {isSelected && (
+                        <div className="absolute top-4 right-4 text-primary flex items-center gap-2">
+                          {isMaster && (
+                            <span className="text-[10px] uppercase tracking-widest bg-primary/20 px-2 py-1 rounded-full">Master</span>
+                          )}
+                          <span className="material-symbols-outlined fill-1">check_circle</span>
+                        </div>
+                      )}
+                      <div className="flex gap-4 mb-6">
+                        <div className={`speaker-badge size-20 rounded-xl flex items-center justify-center border ${isSelected ? 'bg-primary/20 border-primary/30' : 'bg-white/5 border-white/10'}`}>
+                          <PlayOneIcon className="w-12 h-16" />
+                          {isSelected && (
+                            <span className="speaker-pulse" />
+                          )}
+                        </div>
+                        <div className="flex flex-col justify-center">
+                          <h4 className="text-white font-bold">{device.name}</h4>
+                          <p className="text-white/40 text-xs font-medium uppercase tracking-tight">Model: {device.model}</p>
+                          <p className="text-white/40 text-[10px] font-mono mt-1">IP: {device.host}</p>
+                          <div className={`equalizer mt-3 ${isSelected ? 'is-active' : 'is-idle'}`}>
+                            <span className="equalizer-bar bar-1" />
+                            <span className="equalizer-bar bar-2" />
+                            <span className="equalizer-bar bar-3" />
+                            <span className="equalizer-bar bar-4" />
+                            <span className="equalizer-bar bar-5" />
+                          </div>
+                        </div>
+                      </div>
+                      <div className="space-y-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-white/60">Volume</span>
+                          <span className={`font-bold ${isSelected ? 'text-primary' : 'text-white/40'}`}>{device.volume}%</span>
+                        </div>
+                        <input
+                          className="w-full"
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={device.volume}
+                          onChange={(e) => handleVolumeChange(device.host, Number(e.target.value))}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           </div>
         </div>
 
-        {/* Global Player Bar */}
-        <div className="absolute bottom-0 inset-x-0 p-8 z-20 pointer-events-none">
-          <div className="max-w-4xl mx-auto pointer-events-auto">
-            <Player
-              onPlay={handlePlay}
-              isLoading={loading}
-              activeDeviceCount={selectedHosts.length}
-            />
+        {/* Broadcast Panel */}
+        <footer className="glass border-t border-white/10 z-40">
+          <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center gap-6 px-4 md:px-8 py-6">
+            <div className="flex items-center gap-4 w-full md:w-auto">
+              <div className="size-12 rounded-xl bg-red-500/10 flex items-center justify-center border border-red-500/20">
+                <span className="material-symbols-outlined text-red-500">video_library</span>
+              </div>
+              <div>
+                <h4 className="text-white font-bold text-sm leading-tight">YouTube Broadcast</h4>
+                <p className="text-white/40 text-xs">Broadcast audio to selected devices</p>
+                <div className="flex items-center gap-2 mt-2 text-xs text-white/60 max-w-[320px]">
+                  <span className={`size-2 rounded-full ${nowPlaying?.isPlaying ? 'bg-emerald-500 animate-pulse' : 'bg-white/20'}`}></span>
+                  <span className="truncate">
+                    {nowPlaying?.title ? `Now: ${nowPlaying.title}` : 'Idle'}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex-1 w-full relative">
+              <input
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-all text-sm font-display"
+                placeholder="Paste YouTube URL here (e.g., https://youtube.com/watch?v=...)"
+                type="text"
+                value={youtubeUrl}
+                onChange={(e) => setYoutubeUrl(e.target.value)}
+              />
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 text-white/40">
+                <span className="material-symbols-outlined text-sm">link</span>
+              </div>
+            </div>
+            <button
+              onClick={handlePlay}
+              disabled={!youtubeUrl || selectedHosts.length === 0 || broadcasting}
+              className="btn-primary w-full md:w-auto px-8 py-3 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary/90 transition-all shadow-[0_0_20px_rgba(34,197,94,0.4)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className={`material-symbols-outlined text-[20px] ${broadcasting ? 'animate-spin' : ''}`}>{broadcasting ? 'progress_activity' : 'play_arrow'}</span>
+              {broadcasting ? 'Broadcasting' : 'Start Broadcast'}
+            </button>
+            <button
+              onClick={handlePause}
+              disabled={selectedHosts.length === 0}
+              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <span className="material-symbols-outlined text-[20px]">pause</span>
+            </button>
+            <button
+              onClick={handleStop}
+              disabled={selectedHosts.length === 0}
+              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <span className="material-symbols-outlined text-[20px]">stop</span>
+            </button>
           </div>
-        </div>
-
+        </footer>
       </main>
+
+      {toast && (
+        <div className="fixed bottom-32 right-8 glass p-4 rounded-2xl border-emerald-500/20 flex items-center gap-4 shadow-2xl z-50">
+          <div className="size-10 bg-emerald-500/20 rounded-full flex items-center justify-center">
+            <span className="material-symbols-outlined text-emerald-500">cloud_done</span>
+          </div>
+          <div>
+            <p className="text-white text-sm font-bold">Status</p>
+            <p className="text-white/40 text-xs">{toast}</p>
+          </div>
+          <button onClick={() => setToast(null)} className="text-white/20 hover:text-white ml-2">
+            <span className="material-symbols-outlined text-sm">close</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
