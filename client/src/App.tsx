@@ -94,6 +94,7 @@ function App() {
     startedAt: number | null;
     durationSec: number | null;
     durationLabel: string | null;
+    autoStopTime?: string | null;
   } | null>(null);
   const [tick, setTick] = useState(0);
 
@@ -435,12 +436,19 @@ function App() {
                       style={progress ? { width: `${progress.percent}%` } : undefined}
                     />
                   </div>
-                  {progress && (
-                    <div className="mt-1 flex justify-between text-[10px] text-white/50 font-mono">
-                      <span>{formatTime(progress.elapsed)}</span>
-                      <span>{nowPlaying?.durationLabel || formatTime(progress.duration)}</span>
-                    </div>
-                  )}
+                  <div className="mt-1 flex justify-between text-[10px] text-white/50 font-mono">
+                    {progress ? (
+                      <>
+                        <span>{formatTime(progress.elapsed)}</span>
+                        <span>{nowPlaying?.durationLabel || formatTime(progress.duration)}</span>
+                      </>
+                    ) : (
+                      <span className="text-white/30">--:--</span>
+                    )}
+                    <span className="text-white/60">
+                      Stop: {nowPlaying?.autoStopTime || '--:--'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

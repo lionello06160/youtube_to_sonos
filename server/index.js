@@ -553,7 +553,8 @@ app.get('/status', (req, res) => {
         startedAt: lastPlayback?.startedAt || null,
         deviceHost: lastPlayback?.deviceHost || null,
         durationSec: currentDurationSec,
-        durationLabel: currentDurationLabel
+        durationLabel: currentDurationLabel,
+        autoStopTime: autoConfig.autoStopTime || null
     });
 });
 
