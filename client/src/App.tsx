@@ -95,6 +95,7 @@ function App() {
     durationSec: number | null;
     durationLabel: string | null;
     autoStopTime?: string | null;
+    autoShutdownTime?: string | null;
   } | null>(null);
   const [tick, setTick] = useState(0);
 
@@ -447,6 +448,9 @@ function App() {
                     )}
                     <span className="text-white/60">
                       Stop: {nowPlaying?.autoStopTime || '--:--'}
+                    </span>
+                    <span className="text-white/60">
+                      Shutdown: {nowPlaying?.autoShutdownTime || '--:--'}
                     </span>
                   </div>
                 </div>

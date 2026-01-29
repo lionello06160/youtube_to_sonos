@@ -37,6 +37,7 @@ let autoConfig = {
     autoPlayDeviceHost: '',
     autoPlayTime: '',
     autoStopTime: '',
+    autoShutdownTime: '',
     autoPlayOnBoot: false
 };
 
@@ -57,6 +58,7 @@ const loadAutoConfig = () => {
         autoPlayDeviceHost: process.env.AUTO_PLAY_DEVICE_HOST || '',
         autoPlayTime: process.env.AUTO_PLAY_TIME || '',
         autoStopTime: process.env.AUTO_STOP_TIME || '',
+        autoShutdownTime: process.env.AUTO_SHUTDOWN_TIME || '',
         autoPlayOnBoot: String(process.env.AUTO_PLAY_ON_BOOT || '').toLowerCase() === 'true'
     };
     if (!fs.existsSync(CONFIG_PATH)) {
@@ -554,7 +556,8 @@ app.get('/status', (req, res) => {
         deviceHost: lastPlayback?.deviceHost || null,
         durationSec: currentDurationSec,
         durationLabel: currentDurationLabel,
-        autoStopTime: autoConfig.autoStopTime || null
+        autoStopTime: autoConfig.autoStopTime || null,
+        autoShutdownTime: autoConfig.autoShutdownTime || null
     });
 });
 
