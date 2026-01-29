@@ -390,7 +390,7 @@ function App() {
                             <h4 className="text-white font-bold">{device.name}</h4>
                             <p className="text-white/40 text-xs font-medium uppercase tracking-tight">Model: {device.model}</p>
                             <p className="text-white/40 text-[10px] font-mono mt-1">IP: {device.host}</p>
-                            <div className={`equalizer mt-3 ${isSelected ? 'is-active' : 'is-idle'}`}>
+                            <div className={`equalizer mt-3 ${isSelected && nowPlaying?.isPlaying ? 'is-active' : 'is-idle'}`}>
                               <span className="equalizer-bar bar-1" />
                               <span className="equalizer-bar bar-2" />
                               <span className="equalizer-bar bar-3" />
