@@ -1,4 +1,4 @@
-const DEFAULT_URL = 'http://10.10.4.213:3005';
+const DEFAULT_URL = 'http://10.10.4.14:3005';
 const apiUrlInput = document.getElementById('apiUrl');
 const saveBtn = document.getElementById('saveBtn');
 const testBtn = document.getElementById('testBtn');

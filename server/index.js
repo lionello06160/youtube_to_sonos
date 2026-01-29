@@ -9,7 +9,7 @@ const execPromise = util.promisify(exec);
 
 const app = express();
 const PORT = 3005;
-const HOST_IP = '10.10.4.213';
+const HOST_IP = '10.10.4.14';
 const VERSION = '8.0 (Clean URI)';
 
 // STORE STATE LOCALLY

@@ -28,7 +28,7 @@ Update these two values to match your network:
 - **Server stream IP**: `server/index.js` -> `HOST_IP`
   - Must be the IP Sonos can reach (e.g., your Mac’s LAN IP)
 - **Client API URL**: `client/src/App.tsx` -> `API_URL`
-  - Should point to the server, e.g. `http://10.10.4.213:3005`
+  - Should point to the server, e.g. `http://10.10.4.14:3005`
 
 Default server port is `3005`.
 
@@ -83,7 +83,7 @@ The project includes a lightweight Chrome extension under `extension/` that can 
 ### Configure Server URL
 
 1. Click the extension icon → ⚙️ **Settings**
-2. Set your server URL (example: `http://10.10.4.213:3005`)
+2. Set your server URL (example: `http://10.10.4.14:3005`)
 3. Click **Save**
 
 ### Use the Extension

@@ -1,4 +1,4 @@
-const DEFAULT_URL = 'http://10.10.4.213:3005';
+const DEFAULT_URL = 'http://10.10.4.14:3005';
 
 const statusPill = document.getElementById('statusPill');
 const statusText = document.getElementById('statusText');
