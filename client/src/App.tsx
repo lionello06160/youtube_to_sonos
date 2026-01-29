@@ -87,6 +87,14 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [toast, setToast] = useState<string | null>(null);
+  const [autoConfig, setAutoConfig] = useState({
+    autoPlayUrl: '',
+    autoPlayDeviceHost: '',
+    autoPlayTime: '',
+    autoStopTime: '',
+    autoPlayOnBoot: false
+  });
+  const [savingAuto, setSavingAuto] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<{
     title: string | null;
     isPlaying: boolean;
@@ -142,6 +150,18 @@ function App() {
   }, [youtubeUrl]);
 
   useEffect(() => {
+    const fetchAutoConfig = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/auto-config`);
+        setAutoConfig(res.data);
+      } catch {
+        // ignore
+      }
+    };
+    fetchAutoConfig();
+  }, []);
+
+  useEffect(() => {
     let mounted = true;
     const fetchStatus = async () => {
       try {
@@ -164,6 +184,12 @@ function App() {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!autoConfig.autoPlayDeviceHost && selectedHosts.length > 0) {
+      setAutoConfig((prev) => ({ ...prev, autoPlayDeviceHost: selectedHosts[0] }));
+    }
+  }, [selectedHosts, autoConfig.autoPlayDeviceHost]);
 
   const handleVolumeChange = async (host: string, newVolume: number) => {
     setDevices(prev => prev.map(d => d.host === host ? { ...d, volume: newVolume } : d));
@@ -230,6 +256,19 @@ function App() {
       showToast('Stopped');
     } catch (err: any) {
       showToast('Stop failed');
+    }
+  };
+
+  const handleSaveAutoConfig = async () => {
+    setSavingAuto(true);
+    try {
+      const res = await axios.post(`${API_URL}/auto-config`, autoConfig);
+      setAutoConfig(res.data);
+      showToast('Automation settings saved');
+    } catch (err: any) {
+      showToast(err?.response?.data || 'Automation save failed');
+    } finally {
+      setSavingAuto(false);
     }
   };
 
@@ -305,6 +344,83 @@ function App() {
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* Automation */}
+            <div className="glass p-6 md:p-8 rounded-3xl border border-white/10">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="text-white text-lg font-bold">Automation</h3>
+                  <p className="text-white/40 text-sm">Schedule auto start/stop and play on boot.</p>
+                </div>
+                <button
+                  className="btn-primary px-5 py-2.5 rounded-full text-sm font-bold bg-primary text-black shadow-[0_0_18px_rgba(34,197,94,0.4)] disabled:opacity-50"
+                  onClick={handleSaveAutoConfig}
+                  disabled={savingAuto}
+                >
+                  {savingAuto ? 'Saving...' : 'Save Settings'}
+                </button>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <label className="block text-xs uppercase tracking-[0.2em] text-white/40">Auto Play URL</label>
+                  <input
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-primary"
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    value={autoConfig.autoPlayUrl}
+                    onChange={(e) => setAutoConfig((prev) => ({ ...prev, autoPlayUrl: e.target.value }))}
+                  />
+                  <label className="block text-xs uppercase tracking-[0.2em] text-white/40 mt-4">Auto Play Device (IP)</label>
+                  <input
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-primary"
+                    list="device-hosts"
+                    placeholder="10.10.4.xxx"
+                    value={autoConfig.autoPlayDeviceHost}
+                    onChange={(e) => setAutoConfig((prev) => ({ ...prev, autoPlayDeviceHost: e.target.value }))}
+                  />
+                  <datalist id="device-hosts">
+                    {devices.map((device) => (
+                      <option key={device.host} value={device.host}>
+                        {device.name}
+                      </option>
+                    ))}
+                  </datalist>
+                  <div className="flex items-center gap-3">
+                    <button
+                      className="px-4 py-2 rounded-full border border-white/10 text-xs text-white/70 hover:text-white hover:border-white/30 transition"
+                      onClick={() => selectedHosts[0] && setAutoConfig((prev) => ({ ...prev, autoPlayDeviceHost: selectedHosts[0] }))}
+                    >
+                      Use Selected Master
+                    </button>
+                    <span className="text-xs text-white/40">Selected: {selectedMaster || '-'}</span>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <label className="block text-xs uppercase tracking-[0.2em] text-white/40">Auto Play Time (24h)</label>
+                  <input
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-primary"
+                    type="time"
+                    value={autoConfig.autoPlayTime}
+                    onChange={(e) => setAutoConfig((prev) => ({ ...prev, autoPlayTime: e.target.value }))}
+                  />
+                  <label className="block text-xs uppercase tracking-[0.2em] text-white/40 mt-4">Auto Stop Time (24h)</label>
+                  <input
+                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/30 focus:outline-none focus:border-primary"
+                    type="time"
+                    value={autoConfig.autoStopTime}
+                    onChange={(e) => setAutoConfig((prev) => ({ ...prev, autoStopTime: e.target.value }))}
+                  />
+                  <label className="inline-flex items-center gap-3 text-sm text-white/80 mt-2">
+                    <input
+                      type="checkbox"
+                      className="size-4 accent-green-400"
+                      checked={autoConfig.autoPlayOnBoot}
+                      onChange={(e) => setAutoConfig((prev) => ({ ...prev, autoPlayOnBoot: e.target.checked }))}
+                    />
+                    Auto play on boot
+                  </label>
+                </div>
+              </div>
             </div>
 
             {/* Device Grid */}

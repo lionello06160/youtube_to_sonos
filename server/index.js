@@ -40,6 +40,16 @@ let autoConfig = {
     autoPlayOnBoot: false
 };
 
+const logs = [];
+const log = (msg) => {
+    const line = `[v${VERSION}] ${new Date().toLocaleTimeString()} | ${msg}`;
+    console.log(line);
+    logs.push(line);
+    if (logs.length > 100) logs.shift();
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const isEpipe = (err) =>
+    !!err && (err.code === 'EPIPE' || String(err.message || '').includes('EPIPE'));
 const parseTime = (value) => {
     if (!value || typeof value !== 'string') return null;
     const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -50,7 +60,27 @@ const parseTime = (value) => {
     if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
     return { hour, minute };
 };
-
+const isRetryableUpnp = (err) => {
+    const msg = String(err?.message || err || '');
+    return /ClientUPnPError1023|statusCode\s*500|upnp|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i.test(msg);
+};
+const withRetry = async (fn, { label, attempts = 3, baseDelay = 300 } = {}) => {
+    let lastErr;
+    for (let i = 0; i < attempts; i += 1) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            const retryable = isRetryableUpnp(err);
+            if (!retryable || i === attempts - 1) {
+                throw err;
+            }
+            log(`[WARN] ${label || 'UPnP'} failed, retrying (${i + 1}/${attempts}): ${err.message}`);
+            await sleep(baseDelay * (i + 1));
+        }
+    }
+    throw lastErr;
+};
 const loadAutoConfig = () => {
     const envConfig = {
         autoPlayUrl: process.env.AUTO_PLAY_URL || '',
@@ -72,37 +102,15 @@ const loadAutoConfig = () => {
         autoConfig = envConfig;
     }
 };
-
-const logs = [];
-const log = (msg) => {
-    const line = `[v${VERSION}] ${new Date().toLocaleTimeString()} | ${msg}`;
-    console.log(line);
-    logs.push(line);
-    if (logs.length > 100) logs.shift();
-};
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const isEpipe = (err) =>
-    !!err && (err.code === 'EPIPE' || String(err.message || '').includes('EPIPE'));
-const isRetryableUpnp = (err) => {
-    const msg = String(err?.message || err || '');
-    return /ClientUPnPError1023|statusCode\s*500|upnp|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i.test(msg);
-};
-const withRetry = async (fn, { label, attempts = 3, baseDelay = 300 } = {}) => {
-    let lastErr;
-    for (let i = 0; i < attempts; i += 1) {
-        try {
-            return await fn();
-        } catch (err) {
-            lastErr = err;
-            const retryable = isRetryableUpnp(err);
-            if (!retryable || i === attempts - 1) {
-                throw err;
-            }
-            log(`[WARN] ${label || 'UPnP'} failed, retrying (${i + 1}/${attempts}): ${err.message}`);
-            await sleep(baseDelay * (i + 1));
-        }
+const saveAutoConfig = (nextConfig) => {
+    autoConfig = { ...autoConfig, ...nextConfig };
+    try {
+        fs.writeFileSync(CONFIG_PATH, JSON.stringify(autoConfig, null, 2));
+    } catch (err) {
+        log(`[WARN] Failed to write config.json: ${err.message}`);
     }
-    throw lastErr;
+    scheduleDailyStop();
+    scheduleDailyStart();
 };
 const scheduleRestart = (reason) => {
     if (!lastPlayback) return;
@@ -214,20 +222,6 @@ const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
     return currentDirectUrl;
 };
 
-log(`BOOT: Starting Sonons v${VERSION}...`);
-loadAutoConfig();
-scheduleDailyStop();
-scheduleDailyStart();
-if (autoConfig.autoPlayOnBoot && autoConfig.autoPlayUrl && autoConfig.autoPlayDeviceHost) {
-    setTimeout(async () => {
-        try {
-            await startPlayback(autoConfig.autoPlayDeviceHost, autoConfig.autoPlayUrl);
-            log('Auto play on boot started.');
-        } catch (err) {
-            log(`[WARN] Auto play on boot failed: ${err.message}`);
-        }
-    }, 8000);
-}
 
 const resolveCoordinatorHost = async (deviceHost) => {
     try {
@@ -557,6 +551,41 @@ app.get('/status', (req, res) => {
     });
 });
 
+// Automation config
+app.get('/auto-config', (req, res) => {
+    res.json(autoConfig);
+});
+
+app.post('/auto-config', (req, res) => {
+    const {
+        autoPlayUrl,
+        autoPlayDeviceHost,
+        autoPlayTime,
+        autoStopTime,
+        autoPlayOnBoot
+    } = req.body || {};
+
+    const nextConfig = {
+        autoPlayUrl: typeof autoPlayUrl === 'string' ? autoPlayUrl.trim() : autoConfig.autoPlayUrl,
+        autoPlayDeviceHost: typeof autoPlayDeviceHost === 'string' ? autoPlayDeviceHost.trim() : autoConfig.autoPlayDeviceHost,
+        autoPlayTime: typeof autoPlayTime === 'string' ? autoPlayTime.trim() : autoConfig.autoPlayTime,
+        autoStopTime: typeof autoStopTime === 'string' ? autoStopTime.trim() : autoConfig.autoStopTime,
+        autoPlayOnBoot: typeof autoPlayOnBoot === 'boolean' ? autoPlayOnBoot : autoConfig.autoPlayOnBoot
+    };
+
+    if (nextConfig.autoPlayTime && !parseTime(nextConfig.autoPlayTime)) {
+        res.status(400).send('autoPlayTime must be HH:MM');
+        return;
+    }
+    if (nextConfig.autoStopTime && !parseTime(nextConfig.autoStopTime)) {
+        res.status(400).send('autoStopTime must be HH:MM');
+        return;
+    }
+
+    saveAutoConfig(nextConfig);
+    res.json(autoConfig);
+});
+
 // THE CLEAN ENDPOINT
 app.get('/sonons.mp3', async (req, res) => {
     log(`SPEAKER CONNECTED to /sonons.mp3`);
@@ -670,6 +699,21 @@ app.get('/sonons.mp3', async (req, res) => {
         }
     });
 });
+
+log(`BOOT: Starting Sonons v${VERSION}...`);
+loadAutoConfig();
+scheduleDailyStop();
+scheduleDailyStart();
+if (autoConfig.autoPlayOnBoot && autoConfig.autoPlayUrl && autoConfig.autoPlayDeviceHost) {
+    setTimeout(async () => {
+        try {
+            await startPlayback(autoConfig.autoPlayDeviceHost, autoConfig.autoPlayUrl);
+            log('Auto play on boot started.');
+        } catch (err) {
+            log(`[WARN] Auto play on boot failed: ${err.message}`);
+        }
+    }, 8000);
+}
 
 app.listen(PORT, '0.0.0.0', () => {
     log(`Sonons v${VERSION} Ready.`);
