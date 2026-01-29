@@ -449,9 +449,6 @@ function App() {
                     <span className="text-white/60">
                       Stop: {nowPlaying?.autoStopTime || '--:--'}
                     </span>
-                    <span className="text-white/60">
-                      Shutdown: {nowPlaying?.autoShutdownTime || '--:--'}
-                    </span>
                   </div>
                 </div>
               </div>
