@@ -90,19 +90,6 @@ function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const fetchDevices = async () => {
-    setDiscovering(true);
-    setError(null);
-    try {
-      const res = await axios.get(`${API_URL}/devices`);
-      setDevices(res.data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to scan network');
-    } finally {
-      setDiscovering(false);
-    }
-  };
-
   const fetchDeep = async () => {
     setDiscovering(true);
     setError(null);
@@ -120,7 +107,7 @@ function App() {
   };
 
   useEffect(() => {
-    fetchDevices();
+    fetchDeep();
   }, []);
 
   useEffect(() => {
@@ -242,20 +229,12 @@ function App() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={fetchDevices}
-                disabled={discovering}
-                className="btn-secondary flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white/5 border border-white/10 text-white text-sm font-bold hover:bg-white/10 transition-all disabled:opacity-50"
-              >
-                <span className={`material-symbols-outlined text-[18px] ${discovering ? 'animate-spin' : ''}`}>sync</span>
-                Scan
-              </button>
-              <button
                 onClick={fetchDeep}
                 disabled={discovering}
                 className="btn-accent flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent-amber/20 border border-accent-amber/40 text-accent-amber text-sm font-bold hover:bg-accent-amber/30 transition-all neon-glow-amber disabled:opacity-50"
               >
-                <span className="material-symbols-outlined text-[18px]">radar</span>
-                Deep Scan
+                <span className={`material-symbols-outlined text-[18px] ${discovering ? 'animate-spin' : ''}`}>radar</span>
+                Scan
               </button>
               <div className="h-8 w-[1px] bg-white/10 mx-2"></div>
               <div className="size-10 rounded-full border border-white/20 p-0.5">
@@ -318,7 +297,7 @@ function App() {
                   onClick={fetchDeep}
                   className="mt-6 px-6 py-2.5 rounded-xl bg-white text-black font-bold text-xs uppercase tracking-widest"
                 >
-                  Initiate Deep Scan
+                  Scan Network
                 </button>
               </div>
             ) : (

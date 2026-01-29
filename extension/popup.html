@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sonons Controller</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="logo">S</div>
+        <div>
+          <div class="title">Sonons</div>
+          <div class="subtitle">Chrome Extension</div>
+        </div>
+      </div>
+      <button class="icon-btn" id="openOptions" title="Settings">⚙︎</button>
+    </header>
+
+    <section class="status">
+      <div class="status-pill" id="statusPill">Idle</div>
+      <div class="now-playing" id="nowPlaying">Now: -</div>
+      <div class="server" id="serverUrl">Server: -</div>
+    </section>
+
+    <section class="controls">
+      <button class="btn btn-accent" id="scanBtn">Scan</button>
+      <button class="btn btn-outline" id="pauseBtn">Pause</button>
+      <button class="btn btn-outline" id="stopBtn">Stop</button>
+    </section>
+
+    <section class="broadcast">
+      <label for="youtubeUrl">YouTube URL</label>
+      <input type="text" id="youtubeUrl" placeholder="Paste YouTube URL" />
+      <button class="btn btn-primary" id="playBtn">Start Broadcast</button>
+    </section>
+
+    <section class="devices">
+      <div class="devices-header">
+        <span>Discovered Devices</span>
+        <div class="devices-actions">
+          <button class="link" id="selectAllBtn">Select All</button>
+          <button class="link" id="clearBtn">Clear</button>
+        </div>
+      </div>
+      <div class="device-list" id="deviceList">
+        <div class="empty">No devices</div>
+      </div>
+    </section>
+
+    <div class="toast" id="toast" hidden></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

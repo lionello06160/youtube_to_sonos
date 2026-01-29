@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sonons Settings</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>Sonons Extension Settings</h1>
+    <p>設定 Sonons 伺服器位址 (含埠號)。</p>
+
+    <label for="apiUrl">Server URL</label>
+    <input type="text" id="apiUrl" placeholder="http://10.10.4.213:3005" />
+
+    <div class="actions">
+      <button id="saveBtn">Save</button>
+      <button id="testBtn" class="outline">Test</button>
+    </div>
+
+    <div id="status" class="status"></div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
