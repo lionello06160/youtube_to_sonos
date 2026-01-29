@@ -69,6 +69,30 @@ http://localhost:5173
 3. Paste a YouTube URL and click **Broadcast**.
 4. Adjust volume from the device cards.
 
+## Chrome Extension (Usage)
+
+The project includes a lightweight Chrome extension under `extension/` that can control the Sonons server.
+
+### Load the Extension
+
+1. Open Chrome and go to `chrome://extensions`
+2. Enable **Developer mode** (top right)
+3. Click **Load unpacked**
+4. Select the `sonons/extension` folder
+
+### Configure Server URL
+
+1. Click the extension icon → ⚙️ **Settings**
+2. Set your server URL (example: `http://10.10.4.213:3005`)
+3. Click **Save**
+
+### Use the Extension
+
+- **Scan** (uses `/scan`, same as Deep Scan)
+- Select devices and adjust volume
+- Paste a YouTube URL and click **Start Broadcast**
+- Use **Pause** / **Stop** to control playback
+
 ## API Endpoints
 
 - `GET /check` – health check
