@@ -14,6 +14,14 @@ const VERSION = '8.0 (Clean URI)';
 // This allows us to give Sonos a clean URL without messy query params
 let currentYoutubeUrl = '';
 let currentTitle = 'Sonons Stream';
+let lastPlayback = null;
+let restartTimer = null;
+let restartAttempts = 0;
+const MAX_RESTART_ATTEMPTS = 3;
+const RESTART_WINDOW_MS = 20000;
+let currentDirectUrl = '';
+let currentDirectUrlAt = 0;
+const DIRECT_URL_TTL_MS = 5 * 60 * 1000;
 
 const logs = [];
 const log = (msg) => {
@@ -24,6 +32,51 @@ const log = (msg) => {
 };
 const isEpipe = (err) =>
     !!err && (err.code === 'EPIPE' || String(err.message || '').includes('EPIPE'));
+const scheduleRestart = (reason) => {
+    if (!lastPlayback) return;
+    const age = Date.now() - lastPlayback.startedAt;
+    if (age > RESTART_WINDOW_MS) {
+        log(`- Restart skipped (too old): ${reason}`);
+        return;
+    }
+    if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+        log(`- Restart skipped (max attempts): ${reason}`);
+        return;
+    }
+    if (restartTimer) return;
+    restartAttempts += 1;
+    const delay = 1500 * restartAttempts;
+    log(`- Auto-restart scheduled in ${delay}ms (${reason})`);
+    restartTimer = setTimeout(async () => {
+        restartTimer = null;
+        try {
+            const device = new Sonos(lastPlayback.deviceHost);
+            log(`- Auto-restart attempt ${restartAttempts}`);
+            await device.setAVTransportURI({ uri: lastPlayback.uri, metadata: lastPlayback.metadata, onlySetUri: true });
+            await device.play();
+        } catch (err) {
+            log(`[WARN] Auto-restart failed: ${err.message}`);
+        }
+    }, delay);
+};
+
+const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
+    const now = Date.now();
+    if (currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
+        return currentDirectUrl;
+    }
+    const { stdout } = await execPromise(
+        `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" -f "bestaudio/best" -g "${youtubeUrl}"`,
+        { maxBuffer: 1024 * 1024 }
+    );
+    const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!lines.length) {
+        throw new Error('yt-dlp returned empty direct URL');
+    }
+    currentDirectUrl = lines[0];
+    currentDirectUrlAt = now;
+    return currentDirectUrl;
+};
 
 log(`BOOT: Starting Sonons v${VERSION}...`);
 
@@ -176,6 +229,8 @@ app.post('/play', async (req, res) => {
     try {
         // 1. UPDATE STATE
         currentYoutubeUrl = youtubeUrl;
+        currentDirectUrl = '';
+        currentDirectUrlAt = 0;
 
         const coordinatorHost = await resolveCoordinatorHost(deviceHost);
         if (coordinatorHost !== deviceHost) {
@@ -230,6 +285,17 @@ app.post('/play', async (req, res) => {
                 log(`- Starting playback...`);
                 await device.play();
                 log(`[SUCCESS] Device accepted: ${option.label}`);
+                lastPlayback = {
+                    deviceHost: coordinatorHost,
+                    uri: option.uri,
+                    metadata: option.metadata,
+                    startedAt: Date.now()
+                };
+                restartAttempts = 0;
+                if (restartTimer) {
+                    clearTimeout(restartTimer);
+                    restartTimer = null;
+                }
                 res.send({ status: 'playing', title });
                 return;
             } catch (err) {
@@ -276,48 +342,70 @@ app.get('/sonons.mp3', async (req, res) => {
         .trim() || 'Sonons Stream';
     res.header('Content-Type', 'audio/mpeg');
     res.header('ice-name', headerTitle);
-    res.header('Cache-Control', 'no-cache');
+    res.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.header('Pragma', 'no-cache');
+    res.header('Expires', '0');
+    res.header('Connection', 'keep-alive');
     res.header('Transfer-Encoding', 'chunked');
+    res.header('Accept-Ranges', 'none');
+    res.flushHeaders();
+    if (res.socket) {
+        res.socket.setKeepAlive(true, 15000);
+        res.socket.setNoDelay(true);
+        res.socket.setTimeout(0);
+    }
 
-    const ytArgs = [
-        '--no-playlist',
-        '--no-warnings',
-        '--extractor-args', 'youtube:player_client=android,web',
-        '--user-agent', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        '--retries', '10',
-        '--fragment-retries', '10',
-        '--retry-sleep', '1',
-        '--socket-timeout', '10',
-        '-f', 'bestaudio/best',
-        '-o', '-',
-        currentYoutubeUrl
+    const ytExtractorArgs = 'youtube:player_client=android,web';
+    const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    let directUrl;
+    try {
+        directUrl = await resolveDirectUrl(currentYoutubeUrl, ytExtractorArgs, ytUserAgent);
+        log(`- Direct URL resolved`);
+    } catch (err) {
+        log(`[ERR] Direct URL failed: ${err.message}`);
+        res.end();
+        return;
+    }
+
+    const ffArgs = [
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '5',
+        '-reconnect_at_eof', '1',
+        '-user_agent', ytUserAgent,
+        '-fflags', '+nobuffer',
+        '-analyzeduration', '0',
+        '-probesize', '32k',
+        '-i', directUrl,
+        '-vn', '-sn', '-dn',
+        '-acodec', 'libmp3lame',
+        '-b:a', '192k',
+        '-f', 'mp3',
+        '-flush_packets', '1',
+        'pipe:1'
     ];
-    const yt = spawn('yt-dlp', ytArgs);
-    const ff = spawn('ffmpeg', ['-i', 'pipe:0', '-f', 'mp3', '-acodec', 'libmp3lame', '-ab', '192k', 'pipe:1']);
+    const ff = spawn('ffmpeg', ffArgs);
 
-    let ytErr = '';
     let ffErr = '';
-    yt.stderr.on('data', (chunk) => {
-        if (ytErr.length < 2000) ytErr += chunk.toString();
-    });
     ff.stderr.on('data', (chunk) => {
         if (ffErr.length < 2000) ffErr += chunk.toString();
     });
 
-    yt.stdout.pipe(ff.stdin);
     ff.stdout.pipe(res);
 
     req.on('close', () => {
         log(`STREAM CLOSED.`);
-        yt.kill();
         ff.kill();
+        scheduleRestart('client closed');
     });
 
     res.on('error', (e) => {
         if (isEpipe(e)) {
             log(`STREAM EPIPE (client closed).`);
-            yt.kill();
             ff.kill();
+            scheduleRestart('epipe');
             return;
         }
         log(`RES Error: ${e.message}`);
@@ -329,15 +417,14 @@ app.get('/sonons.mp3', async (req, res) => {
         }
         log(`FF stdout error: ${e.message}`);
     });
-    yt.on('error', (e) => log(`YT Error: ${e.message}`));
     ff.on('error', (e) => log(`FF Error: ${e.message}`));
-    yt.on('close', (code, signal) => {
-        log(`YT Exit: code=${code ?? 'null'} signal=${signal ?? 'null'}`);
-        if (ytErr) log(`YT Stderr: ${ytErr.replace(/\s+/g, ' ').trim()}`);
-    });
     ff.on('close', (code, signal) => {
         log(`FF Exit: code=${code ?? 'null'} signal=${signal ?? 'null'}`);
         if (ffErr) log(`FF Stderr: ${ffErr.replace(/\s+/g, ' ').trim()}`);
+        if (code && code !== 0) {
+            currentDirectUrl = '';
+            currentDirectUrlAt = 0;
+        }
     });
 });
 
