@@ -274,6 +274,10 @@ function App() {
                 <span className={`material-symbols-outlined text-[18px] ${discovering ? 'animate-spin' : ''}`}>radar</span>
                 Scan
               </button>
+              <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border border-white/10 bg-white/5 text-white/60 text-[11px] font-mono">
+                <span className="size-2 rounded-full bg-emerald-500/60"></span>
+                <span>Server: {API_URL.replace('http://', '').replace('https://', '')}</span>
+              </div>
               <div className="h-8 w-[1px] bg-white/10 mx-2"></div>
               <div className="size-10 rounded-full border border-white/20 p-0.5">
                 <div className="w-full h-full rounded-full bg-gradient-to-br from-white/30 to-white/5"></div>
