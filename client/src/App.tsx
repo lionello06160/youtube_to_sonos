@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import type { Device } from './types';
+import type { Device, LoopMode, PlaylistTrack } from './types';
 
 const API_URL = `http://10.10.4.14:3005`;
 
@@ -97,6 +97,12 @@ function App() {
     autoStopTime?: string | null;
     autoShutdownTime?: string | null;
   } | null>(null);
+  const [playlistItems, setPlaylistItems] = useState<PlaylistTrack[]>([]);
+  const [playlistIndex, setPlaylistIndex] = useState<number | null>(null);
+  const [loopMode, setLoopMode] = useState<LoopMode>('all');
+  const [playlistLoading, setPlaylistLoading] = useState(false);
+  const [playlistError, setPlaylistError] = useState<string | null>(null);
+  const [dragUid, setDragUid] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   const selectedMaster = selectedHosts[0];
@@ -124,8 +130,28 @@ function App() {
     }
   };
 
+  const fetchPlaylist = async () => {
+    setPlaylistLoading(true);
+    setPlaylistError(null);
+    try {
+      const res = await axios.get(`${API_URL}/playlist`);
+      setPlaylistItems(res.data.items || []);
+      setPlaylistIndex(
+        typeof res.data.currentIndex === 'number' ? res.data.currentIndex : null
+      );
+      if (res.data.loopMode) {
+        setLoopMode(res.data.loopMode as LoopMode);
+      }
+    } catch (err: any) {
+      setPlaylistError('Playlist load failed: ' + err.message);
+    } finally {
+      setPlaylistLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchDeep();
+    fetchPlaylist();
   }, []);
 
   useEffect(() => {
@@ -150,6 +176,14 @@ function App() {
         const res = await axios.get(`${API_URL}/status`);
         if (!mounted) return;
         setNowPlaying(res.data);
+        if (typeof res.data.playlistIndex === 'number') {
+          setPlaylistIndex(res.data.playlistIndex);
+        } else {
+          setPlaylistIndex(null);
+        }
+        if (res.data.loopMode) {
+          setLoopMode(res.data.loopMode as LoopMode);
+        }
       } catch {
         // ignore transient status errors
       }
@@ -221,6 +255,80 @@ function App() {
       showToast('Stopped');
     } catch (err: any) {
       showToast('Stop failed');
+    }
+  };
+
+  const handleAddToPlaylist = async () => {
+    if (!youtubeUrl) return;
+    setPlaylistLoading(true);
+    try {
+      const res = await axios.post(`${API_URL}/playlist`, {
+        inputUrl: youtubeUrl,
+        mode: 'append'
+      });
+      setPlaylistItems(res.data.items || []);
+      showToast(`Added ${res.data.addedCount ?? 0} track(s)`);
+    } catch (err: any) {
+      showToast('Add to playlist failed');
+    } finally {
+      setPlaylistLoading(false);
+    }
+  };
+
+  const handlePlaylistStart = async (index: number) => {
+    if (selectedHosts.length === 0) return;
+    setBroadcasting(true);
+    if (selectedHosts.length > 1) {
+      try {
+        await axios.post(`${API_URL}/group`, {
+          masterHost: selectedHosts[0],
+          memberHosts: selectedHosts
+        });
+      } catch (err) {
+        showToast('Grouping failed');
+      }
+    }
+    try {
+      await axios.post(`${API_URL}/playlist/start`, {
+        deviceHost: selectedHosts[0],
+        index
+      });
+      setPlaylistIndex(index);
+      showToast('Playlist started');
+    } catch (err: any) {
+      showToast('Playlist start failed');
+    } finally {
+      setBroadcasting(false);
+    }
+  };
+
+  const handleLoopModeChange = async (value: LoopMode) => {
+    const previous = loopMode;
+    setLoopMode(value);
+    try {
+      await axios.post(`${API_URL}/playlist/mode`, { loopMode: value });
+    } catch (err: any) {
+      setLoopMode(previous);
+      showToast('Mode update failed');
+    }
+  };
+
+  const handleReorder = async (fromUid: string, toUid: string) => {
+    if (fromUid === toUid) return;
+    const fromIndex = playlistItems.findIndex((item) => item.uid === fromUid);
+    const toIndex = playlistItems.findIndex((item) => item.uid === toUid);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const updated = [...playlistItems];
+    const [moved] = updated.splice(fromIndex, 1);
+    updated.splice(toIndex, 0, moved);
+    setPlaylistItems(updated);
+    try {
+      await axios.post(`${API_URL}/playlist/reorder`, {
+        order: updated.map((item) => item.uid)
+      });
+    } catch (err: any) {
+      showToast('Reorder failed');
+      fetchPlaylist();
     }
   };
 
@@ -415,6 +523,88 @@ function App() {
                 </div>
               )}
             </div>
+
+            {/* Playlist */}
+            <div>
+              <div className="flex items-center justify-between mb-6 px-1">
+                <h3 className="text-white text-lg font-bold">Playlist</h3>
+                <div className="flex items-center gap-3">
+                  <span className="text-white/40 text-[10px] font-bold uppercase tracking-widest">Loop</span>
+                  <select
+                    value={loopMode}
+                    onChange={(e) => handleLoopModeChange(e.target.value as LoopMode)}
+                    className="bg-white/5 border border-white/10 text-white text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-primary"
+                  >
+                    <option value="single">Single</option>
+                    <option value="all">All</option>
+                    <option value="shuffle">Shuffle</option>
+                  </select>
+                </div>
+              </div>
+
+              {playlistError && (
+                <div className="glass border border-rose-500/20 text-rose-200 px-4 py-3 rounded-xl mb-6">
+                  {playlistError}
+                </div>
+              )}
+
+              {playlistLoading && playlistItems.length === 0 ? (
+                <div className="glass p-8 rounded-2xl border border-white/10 animate-pulse">
+                  <div className="h-4 bg-white/10 rounded w-2/3 mb-4"></div>
+                  <div className="h-3 bg-white/5 rounded w-1/2"></div>
+                </div>
+              ) : playlistItems.length === 0 ? (
+                <div className="glass p-8 rounded-2xl text-center border border-white/10">
+                  <div className="mx-auto size-14 rounded-2xl bg-white/5 flex items-center justify-center">
+                    <span className="material-symbols-outlined text-white/40 text-3xl">queue_music</span>
+                  </div>
+                  <h3 className="text-white text-lg font-bold mt-5">Empty Playlist</h3>
+                  <p className="text-white/40 text-sm mt-2">Add a YouTube URL to build your playlist.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {playlistItems.map((track, index) => {
+                    const isCurrent = playlistIndex === index && nowPlaying?.isPlaying;
+                    return (
+                      <div
+                        key={track.uid}
+                        draggable
+                        onDragStart={(e) => {
+                          setDragUid(track.uid);
+                          e.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragEnd={() => setDragUid(null)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (dragUid) {
+                            handleReorder(dragUid, track.uid);
+                          }
+                          setDragUid(null);
+                        }}
+                        className={`glass p-4 rounded-xl border flex items-center gap-4 transition-all ${isCurrent ? 'border-primary/50 shadow-[0_0_20px_rgba(34,197,94,0.3)]' : 'border-white/10 hover:border-white/20'}`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-white/30 text-xs font-mono w-6 text-right">{index + 1}</span>
+                          <span className="material-symbols-outlined text-white/30">drag_indicator</span>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white font-medium truncate">{track.title}</p>
+                          <p className="text-white/40 text-xs font-mono mt-1">
+                            {track.durationLabel || (track.durationSec != null ? formatTime(track.durationSec) : '--:--')}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => handlePlaylistStart(index)}
+                          className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all"
+                        >
+                          Play
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -476,6 +666,14 @@ function App() {
             >
               <span className={`material-symbols-outlined text-[20px] ${broadcasting ? 'animate-spin' : ''}`}>{broadcasting ? 'progress_activity' : 'play_arrow'}</span>
               {broadcasting ? 'Broadcasting' : 'Start Broadcast'}
+            </button>
+            <button
+              onClick={handleAddToPlaylist}
+              disabled={!youtubeUrl || playlistLoading}
+              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              <span className="material-symbols-outlined text-[20px]">playlist_add</span>
+              Add to Playlist
             </button>
             <button
               onClick={handleStop}

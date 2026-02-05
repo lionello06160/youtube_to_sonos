@@ -2,6 +2,7 @@ const express = require('express');
 const { Sonos, AsyncDeviceDiscovery } = require('sonos');
 const cors = require('cors');
 const { spawn, exec } = require('child_process');
+const crypto = require('crypto');
 const util = require('util');
 const fs = require('fs');
 const path = require('path');
@@ -11,6 +12,8 @@ const app = express();
 const PORT = 3005;
 const HOST_IP = '10.10.4.14';
 const VERSION = '8.0 (Clean URI)';
+const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
+const DEFAULT_LOOP_MODE = 'all';
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -40,6 +43,14 @@ let autoConfig = {
     autoShutdownTime: '',
     autoPlayOnBoot: false
 };
+let playlistItems = [];
+let playlistCurrentIndex = null;
+let playlistCurrentUid = null;
+let playlistMode = false;
+let loopMode = DEFAULT_LOOP_MODE;
+let shuffleOrder = [];
+let shufflePos = 0;
+let playlistAdvanceLock = false;
 
 const parseTime = (value) => {
     if (!value || typeof value !== 'string') return null;
@@ -57,6 +68,89 @@ const getEffectiveStopTime = () => {
     const parsed = parseTime(autoConfig.autoStopTime);
     if (parsed) return formatTimeParts(parsed.hour, parsed.minute);
     return formatTimeParts(DAILY_STOP_HOUR, DAILY_STOP_MINUTE);
+};
+
+const formatDuration = (seconds) => {
+    if (!Number.isFinite(seconds)) return null;
+    const total = Math.max(0, Math.floor(seconds));
+    const hrs = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hrs > 0) {
+        return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+};
+
+const readJsonFile = (filePath) => {
+    if (!fs.existsSync(filePath)) return null;
+    try {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        return JSON.parse(raw);
+    } catch (err) {
+        console.warn(`[WARN] Failed to read ${path.basename(filePath)}: ${err.message}`);
+        return null;
+    }
+};
+
+const writeJsonFile = (filePath, data) => {
+    try {
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    } catch (err) {
+        console.warn(`[WARN] Failed to write ${path.basename(filePath)}: ${err.message}`);
+    }
+};
+
+const shuffleArray = (arr) => {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+};
+
+const buildShuffleOrder = (startUid) => {
+    const allUids = playlistItems.map((item) => item.uid);
+    if (!allUids.length) return [];
+    if (!startUid) return shuffleArray(allUids);
+    const rest = allUids.filter((uid) => uid !== startUid);
+    return [startUid, ...shuffleArray(rest)];
+};
+
+const persistPlaylistState = () => {
+    writeJsonFile(PLAYLIST_PATH, {
+        items: playlistItems,
+        loopMode,
+        currentUid: playlistCurrentUid,
+        currentIndex: playlistCurrentIndex
+    });
+};
+
+const loadPlaylistState = () => {
+    const stored = readJsonFile(PLAYLIST_PATH);
+    if (!stored) return;
+    if (Array.isArray(stored.items)) {
+        playlistItems = stored.items.map((item) => ({
+            ...item,
+            uid: item.uid || crypto.randomUUID()
+        }));
+    }
+    if (stored.loopMode && ['all', 'single', 'shuffle'].includes(stored.loopMode)) {
+        loopMode = stored.loopMode;
+    }
+    if (stored.currentUid) {
+        playlistCurrentUid = stored.currentUid;
+        const index = playlistItems.findIndex((item) => item.uid === playlistCurrentUid);
+        playlistCurrentIndex = index >= 0 ? index : null;
+    } else if (Number.isInteger(stored.currentIndex)) {
+        playlistCurrentIndex = stored.currentIndex;
+        playlistCurrentUid = playlistItems[playlistCurrentIndex]?.uid || null;
+    }
+    if (loopMode === 'shuffle' && playlistItems.length) {
+        shuffleOrder = buildShuffleOrder(playlistCurrentUid || playlistItems[0].uid);
+        shufflePos = 0;
+    }
 };
 
 const loadAutoConfig = () => {
@@ -223,8 +317,98 @@ const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
     return currentDirectUrl;
 };
 
+const buildTrackFromEntry = (entry = {}) => {
+    const rawId = entry.id || entry.url || '';
+    const id = String(rawId).trim();
+    if (!id) return null;
+    const url =
+        typeof entry.url === 'string' && /^https?:/i.test(entry.url)
+            ? entry.url
+            : `https://www.youtube.com/watch?v=${id}`;
+    const durationSec = Number.isFinite(entry.duration) ? Number(entry.duration) : null;
+    const durationLabel = entry.duration_string || (durationSec ? formatDuration(durationSec) : null);
+    return {
+        uid: crypto.randomUUID(),
+        id,
+        url,
+        title: String(entry.title || 'Unknown').trim() || 'Unknown',
+        durationSec,
+        durationLabel
+    };
+};
+
+const resolvePlaylistTracks = async (inputUrl) => {
+    const { stdout } = await execPromise(
+        `yt-dlp --no-warnings --flat-playlist --dump-single-json "${inputUrl}"`,
+        { maxBuffer: 1024 * 1024 * 2 }
+    );
+    const payload = JSON.parse(stdout);
+    const entries = Array.isArray(payload?.entries) ? payload.entries : [payload];
+    return entries.map(buildTrackFromEntry).filter(Boolean);
+};
+
+const resetShuffleOrder = (startUid) => {
+    if (!playlistItems.length) {
+        shuffleOrder = [];
+        shufflePos = 0;
+        return;
+    }
+    shuffleOrder = buildShuffleOrder(startUid || playlistCurrentUid || playlistItems[0].uid);
+    shufflePos = 0;
+};
+
+const getNextUidByShuffle = () => {
+    if (!playlistItems.length) return null;
+    if (!shuffleOrder.length) {
+        resetShuffleOrder(playlistCurrentUid || playlistItems[0].uid);
+    }
+    let nextPos = shufflePos + 1;
+    if (nextPos >= shuffleOrder.length) {
+        resetShuffleOrder(playlistCurrentUid || shuffleOrder[shuffleOrder.length - 1]);
+        nextPos = 0;
+    }
+    shufflePos = nextPos;
+    return shuffleOrder[shufflePos] || null;
+};
+
+const advancePlaylist = async (deviceHost) => {
+    if (playlistAdvanceLock) return;
+    if (!playlistMode || !playlistItems.length) return;
+    if (!deviceHost) return;
+    playlistAdvanceLock = true;
+    try {
+        let nextIndex = playlistCurrentIndex ?? 0;
+        let nextUid = playlistCurrentUid;
+
+        if (loopMode === 'single') {
+            // Keep same index/uid
+        } else if (loopMode === 'shuffle') {
+            nextUid = getNextUidByShuffle();
+            nextIndex = playlistItems.findIndex((item) => item.uid === nextUid);
+        } else {
+            nextIndex = (nextIndex + 1) % playlistItems.length;
+            nextUid = playlistItems[nextIndex]?.uid || null;
+        }
+
+        if (nextIndex == null || nextIndex < 0) return;
+        const nextTrack = playlistItems[nextIndex];
+        if (!nextTrack) return;
+
+        playlistCurrentIndex = nextIndex;
+        playlistCurrentUid = nextTrack.uid;
+        persistPlaylistState();
+
+        await startPlayback(deviceHost, nextTrack.url);
+    } catch (err) {
+        log(`[WARN] Playlist advance failed: ${err.message}`);
+    } finally {
+        playlistAdvanceLock = false;
+    }
+};
+
 log(`BOOT: Starting Sonons v${VERSION}...`);
 loadAutoConfig();
+loadPlaylistState();
 scheduleDailyStop();
 scheduleDailyStart();
 if (autoConfig.autoPlayOnBoot && autoConfig.autoPlayUrl && autoConfig.autoPlayDeviceHost) {
@@ -344,6 +528,118 @@ app.get('/scan', async (req, res) => {
         } catch (e) { return null; }
     }));
     res.json(detailedDevices.filter(d => d !== null));
+});
+
+// Playlist
+app.get('/playlist', (req, res) => {
+    res.json({
+        items: playlistItems,
+        currentIndex: playlistCurrentIndex,
+        loopMode
+    });
+});
+
+app.post('/playlist', async (req, res) => {
+    const { inputUrl, mode = 'append' } = req.body || {};
+    if (!inputUrl) {
+        res.status(400).send('inputUrl required');
+        return;
+    }
+    try {
+        const tracks = await resolvePlaylistTracks(inputUrl);
+        if (mode === 'replace') {
+            playlistItems = tracks;
+            playlistCurrentIndex = null;
+            playlistCurrentUid = null;
+            playlistMode = false;
+        } else {
+            playlistItems = [...playlistItems, ...tracks];
+        }
+        if (loopMode === 'shuffle') {
+            resetShuffleOrder(playlistCurrentUid || playlistItems[0]?.uid);
+        }
+        persistPlaylistState();
+        res.send({ items: playlistItems, addedCount: tracks.length });
+    } catch (err) {
+        log(`[ERR] Playlist load: ${err.message}`);
+        res.status(500).send(err.message);
+    }
+});
+
+app.post('/playlist/reorder', (req, res) => {
+    const { order } = req.body || {};
+    if (!Array.isArray(order)) {
+        res.status(400).send('order must be an array');
+        return;
+    }
+    const byUid = new Map(playlistItems.map((item) => [item.uid, item]));
+    const ordered = order.map((uid) => byUid.get(uid)).filter(Boolean);
+    const missing = playlistItems.filter((item) => !order.includes(item.uid));
+    playlistItems = [...ordered, ...missing];
+    if (playlistCurrentUid) {
+        const idx = playlistItems.findIndex((item) => item.uid === playlistCurrentUid);
+        playlistCurrentIndex = idx >= 0 ? idx : null;
+    }
+    if (loopMode === 'shuffle') {
+        resetShuffleOrder(playlistCurrentUid || playlistItems[0]?.uid);
+    }
+    persistPlaylistState();
+    res.send({ items: playlistItems });
+});
+
+app.post('/playlist/start', async (req, res) => {
+    const { deviceHost, index } = req.body || {};
+    if (!deviceHost || !Number.isInteger(index)) {
+        res.status(400).send('deviceHost and index required');
+        return;
+    }
+    const track = playlistItems[index];
+    if (!track) {
+        res.status(404).send('track not found');
+        return;
+    }
+    playlistMode = true;
+    playlistCurrentIndex = index;
+    playlistCurrentUid = track.uid;
+    if (loopMode === 'shuffle') {
+        resetShuffleOrder(track.uid);
+    }
+    persistPlaylistState();
+    try {
+        const { title } = await startPlayback(deviceHost, track.url);
+        res.send({ status: 'playing', title, index });
+    } catch (err) {
+        log(`[ERR] Playlist start: ${err.message}`);
+        res.status(500).send(err.message);
+    }
+});
+
+app.post('/playlist/mode', (req, res) => {
+    const { loopMode: nextMode } = req.body || {};
+    if (!['all', 'single', 'shuffle'].includes(nextMode)) {
+        res.status(400).send('invalid loopMode');
+        return;
+    }
+    loopMode = nextMode;
+    if (loopMode === 'shuffle') {
+        resetShuffleOrder(playlistCurrentUid || playlistItems[0]?.uid);
+    } else {
+        shuffleOrder = [];
+        shufflePos = 0;
+    }
+    persistPlaylistState();
+    res.send({ status: 'ok', loopMode });
+});
+
+app.post('/playlist/clear', (req, res) => {
+    playlistItems = [];
+    playlistCurrentIndex = null;
+    playlistCurrentUid = null;
+    playlistMode = false;
+    shuffleOrder = [];
+    shufflePos = 0;
+    persistPlaylistState();
+    res.send({ status: 'ok' });
 });
 
 // Group devices (optional)
@@ -485,6 +781,7 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
 app.post('/play', async (req, res) => {
     const { deviceHost, youtubeUrl } = req.body;
     try {
+        playlistMode = false;
         const { title } = await startPlayback(deviceHost, youtubeUrl);
         res.send({ status: 'playing', title });
     } catch (e) {
@@ -517,6 +814,7 @@ app.post('/pause', async (req, res) => {
         const host = await resolveCoordinatorHost(deviceHost);
         const device = new Sonos(host);
         await withRetry(() => device.pause(), { label: 'Pause', attempts: 2, baseDelay: 300 });
+        playlistMode = false;
         restartAttempts = 0;
         lastPlayback = null;
         res.send({ status: 'paused' });
@@ -536,6 +834,7 @@ app.post('/stop', async (req, res) => {
         const host = await resolveCoordinatorHost(deviceHost);
         const device = new Sonos(host);
         await withRetry(() => device.stop(), { label: 'Stop', attempts: 2, baseDelay: 300 });
+        playlistMode = false;
         currentYoutubeUrl = '';
         currentTitle = 'Sonons Stream';
         currentDurationSec = null;
@@ -564,7 +863,11 @@ app.get('/status', (req, res) => {
         durationSec: currentDurationSec,
         durationLabel: currentDurationLabel,
         autoStopTime: getEffectiveStopTime(),
-        autoShutdownTime: autoConfig.autoShutdownTime || null
+        autoShutdownTime: autoConfig.autoShutdownTime || null,
+        playlistCount: playlistItems.length,
+        playlistIndex: playlistCurrentIndex,
+        playlistMode,
+        loopMode
     });
 });
 
@@ -580,6 +883,7 @@ app.get('/sonons.mp3', async (req, res) => {
 
     activeStreamCount += 1;
     let closed = false;
+    let endedNaturally = false;
     const markClosed = () => {
         if (closed) return;
         closed = true;
@@ -651,7 +955,11 @@ app.get('/sonons.mp3', async (req, res) => {
         log(`STREAM CLOSED.`);
         markClosed();
         ff.kill();
-        scheduleRestart('client closed');
+        setTimeout(() => {
+            if (!endedNaturally) {
+                scheduleRestart('client closed');
+            }
+        }, 600);
     });
 
     res.on('error', (e) => {
@@ -659,7 +967,11 @@ app.get('/sonons.mp3', async (req, res) => {
             log(`STREAM EPIPE (client closed).`);
             markClosed();
             ff.kill();
-            scheduleRestart('epipe');
+            setTimeout(() => {
+                if (!endedNaturally) {
+                    scheduleRestart('epipe');
+                }
+            }, 600);
             return;
         }
         log(`RES Error: ${e.message}`);
@@ -675,6 +987,16 @@ app.get('/sonons.mp3', async (req, res) => {
     ff.on('close', (code, signal) => {
         log(`FF Exit: code=${code ?? 'null'} signal=${signal ?? 'null'}`);
         if (ffErr) log(`FF Stderr: ${ffErr.replace(/\s+/g, ' ').trim()}`);
+        if (code === 0) {
+            endedNaturally = true;
+            if (playlistMode) {
+                setTimeout(() => {
+                    if (activeStreamCount === 0) {
+                        advancePlaylist(lastPlayback?.deviceHost);
+                    }
+                }, 400);
+            }
+        }
         if (code && code !== 0) {
             currentDirectUrl = '';
             currentDirectUrlAt = 0;
