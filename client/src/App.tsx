@@ -611,8 +611,10 @@ function App() {
                           <button
                             onClick={() => handlePlaylistStart(index)}
                             className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all"
+                            aria-label="Play track"
+                            title="Play"
                           >
-                            Play
+                            <span className="material-symbols-outlined text-[18px]">play_arrow</span>
                           </button>
                           <button
                             onClick={(e) => {
@@ -620,8 +622,10 @@ function App() {
                               handlePlaylistRemove(track.uid);
                             }}
                             className="px-3 py-2 rounded-lg border border-rose-500/30 text-rose-200 text-xs font-bold uppercase tracking-widest hover:bg-rose-500/10 transition-all"
+                            aria-label="Delete track"
+                            title="Delete"
                           >
-                            Delete
+                            <span className="material-symbols-outlined text-[18px]">delete</span>
                           </button>
                         </div>
                       </div>
