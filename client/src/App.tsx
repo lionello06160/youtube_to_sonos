@@ -302,6 +302,20 @@ function App() {
     }
   };
 
+  const handlePlaylistRemove = async (uid: string) => {
+    try {
+      const res = await axios.post(`${API_URL}/playlist/remove`, { uid });
+      setPlaylistItems(res.data.items || []);
+      if (typeof res.data.currentIndex === 'number') {
+        setPlaylistIndex(res.data.currentIndex);
+      } else {
+        setPlaylistIndex(null);
+      }
+    } catch (err: any) {
+      showToast('Remove failed');
+    }
+  };
+
   const handleLoopModeChange = async (value: LoopMode) => {
     const previous = loopMode;
     setLoopMode(value);
@@ -593,12 +607,23 @@ function App() {
                             {track.durationLabel || (track.durationSec != null ? formatTime(track.durationSec) : '--:--')}
                           </p>
                         </div>
-                        <button
-                          onClick={() => handlePlaylistStart(index)}
-                          className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all"
-                        >
-                          Play
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handlePlaylistStart(index)}
+                            className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all"
+                          >
+                            Play
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePlaylistRemove(track.uid);
+                            }}
+                            className="px-3 py-2 rounded-lg border border-rose-500/30 text-rose-200 text-xs font-bold uppercase tracking-widest hover:bg-rose-500/10 transition-all"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     );
                   })}

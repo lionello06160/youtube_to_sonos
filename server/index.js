@@ -468,6 +468,18 @@ const truncate = (value, max = 120) => {
     return value.slice(0, max - 3) + '...';
 };
 
+const resetPlaybackState = () => {
+    currentYoutubeUrl = '';
+    currentTitle = 'Sonons Stream';
+    currentDurationSec = null;
+    currentDurationLabel = null;
+    currentDirectUrl = '';
+    currentDirectUrlAt = 0;
+    activeStreamCount = 0;
+    restartAttempts = 0;
+    lastPlayback = null;
+};
+
 app.use(cors());
 app.use(express.json());
 
@@ -585,6 +597,77 @@ app.post('/playlist/reorder', (req, res) => {
     }
     persistPlaylistState();
     res.send({ items: playlistItems });
+});
+
+app.post('/playlist/remove', async (req, res) => {
+    const { uid } = req.body || {};
+    if (!uid) {
+        res.status(400).send('uid required');
+        return;
+    }
+    const indexToRemove = playlistItems.findIndex((item) => item.uid === uid);
+    if (indexToRemove < 0) {
+        res.status(404).send('track not found');
+        return;
+    }
+
+    const removingCurrent = playlistCurrentUid === uid;
+    playlistItems = playlistItems.filter((item) => item.uid !== uid);
+
+    if (!playlistItems.length) {
+        playlistCurrentIndex = null;
+        playlistCurrentUid = null;
+        playlistMode = false;
+        shuffleOrder = [];
+        shufflePos = 0;
+        persistPlaylistState();
+        if (removingCurrent && lastPlayback?.deviceHost) {
+            try {
+                const device = new Sonos(lastPlayback.deviceHost);
+                await withRetry(() => device.stop(), { label: 'Stop after remove', attempts: 2, baseDelay: 300 });
+            } catch (err) {
+                log(`[WARN] Stop after remove failed: ${err.message}`);
+            }
+            resetPlaybackState();
+        }
+        res.send({ items: playlistItems, currentIndex: playlistCurrentIndex });
+        return;
+    }
+
+    if (removingCurrent) {
+        let nextIndex = indexToRemove;
+        if (nextIndex >= playlistItems.length) {
+            nextIndex = 0;
+        }
+        const nextTrack = playlistItems[nextIndex];
+        playlistCurrentIndex = nextIndex;
+        playlistCurrentUid = nextTrack.uid;
+        if (loopMode === 'shuffle') {
+            resetShuffleOrder(nextTrack.uid);
+        }
+        persistPlaylistState();
+        if (playlistMode && lastPlayback?.deviceHost) {
+            try {
+                await startPlayback(lastPlayback.deviceHost, nextTrack.url);
+            } catch (err) {
+                log(`[WARN] Auto-play after remove failed: ${err.message}`);
+            }
+        }
+    } else {
+        if (playlistCurrentIndex != null && indexToRemove < playlistCurrentIndex) {
+            playlistCurrentIndex -= 1;
+        }
+        if (playlistCurrentUid) {
+            const idx = playlistItems.findIndex((item) => item.uid === playlistCurrentUid);
+            playlistCurrentIndex = idx >= 0 ? idx : null;
+        }
+        if (loopMode === 'shuffle') {
+            resetShuffleOrder(playlistCurrentUid || playlistItems[0]?.uid);
+        }
+        persistPlaylistState();
+    }
+
+    res.send({ items: playlistItems, currentIndex: playlistCurrentIndex });
 });
 
 app.post('/playlist/start', async (req, res) => {
@@ -835,15 +918,7 @@ app.post('/stop', async (req, res) => {
         const device = new Sonos(host);
         await withRetry(() => device.stop(), { label: 'Stop', attempts: 2, baseDelay: 300 });
         playlistMode = false;
-        currentYoutubeUrl = '';
-        currentTitle = 'Sonons Stream';
-        currentDurationSec = null;
-        currentDurationLabel = null;
-        currentDirectUrl = '';
-        currentDirectUrlAt = 0;
-        activeStreamCount = 0;
-        restartAttempts = 0;
-        lastPlayback = null;
+        resetPlaybackState();
         res.send({ status: 'stopped' });
     } catch (e) {
         log(`[ERR] Stop: ${e.message}`);
