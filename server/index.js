@@ -33,6 +33,9 @@ const MAX_RESTART_ATTEMPTS = 3;
 const RESTART_WINDOW_MS = 20000;
 let currentDirectUrl = '';
 let currentDirectUrlAt = 0;
+let currentDirectUrlFor = '';
+let currentDirectUrlPromise = null;
+let currentDirectUrlPromiseFor = '';
 const DIRECT_URL_TTL_MS = 5 * 60 * 1000;
 let activeStreamCount = 0;
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -270,6 +273,9 @@ const scheduleDailyStop = () => {
             currentYoutubeUrl = '';
             currentDirectUrl = '';
             currentDirectUrlAt = 0;
+            currentDirectUrlFor = '';
+            currentDirectUrlPromise = null;
+            currentDirectUrlPromiseFor = '';
             currentDurationSec = null;
             currentDurationLabel = null;
             scheduleDailyStop();
@@ -305,24 +311,41 @@ const scheduleDailyStart = () => {
 };
 
 const resolveDirectUrl = async (youtubeUrl) => {
+    const normalizedUrl = normalizeYoutubeUrl(youtubeUrl);
     const now = Date.now();
-    if (currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
+    if (currentDirectUrlFor === normalizedUrl && currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
         return currentDirectUrl;
+    }
+    if (currentDirectUrlPromise && currentDirectUrlPromiseFor === normalizedUrl) {
+        return currentDirectUrlPromise;
     }
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
     const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
     const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
-    const { stdout } = await execPromise(
-        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${youtubeUrl}"`,
-        { maxBuffer: 1024 * 1024 }
-    );
-    const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (!lines.length) {
-        throw new Error('yt-dlp returned empty direct URL');
+    currentDirectUrlPromiseFor = normalizedUrl;
+    currentDirectUrlPromise = (async () => {
+        const { stdout } = await execPromise(
+            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${normalizedUrl}"`,
+            { maxBuffer: 1024 * 1024 }
+        );
+        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        if (!lines.length) {
+            throw new Error('yt-dlp returned empty direct URL');
+        }
+        const resolvedUrl = lines[0];
+        currentDirectUrl = resolvedUrl;
+        currentDirectUrlAt = Date.now();
+        currentDirectUrlFor = normalizedUrl;
+        return resolvedUrl;
+    })();
+    try {
+        return await currentDirectUrlPromise;
+    } finally {
+        if (currentDirectUrlPromiseFor === normalizedUrl) {
+            currentDirectUrlPromise = null;
+            currentDirectUrlPromiseFor = '';
+        }
     }
-    currentDirectUrl = lines[0];
-    currentDirectUrlAt = now;
-    return currentDirectUrl;
 };
 
 const buildTrackFromEntry = (entry = {}) => {
@@ -515,6 +538,9 @@ const resetPlaybackState = () => {
     currentDurationLabel = null;
     currentDirectUrl = '';
     currentDirectUrlAt = 0;
+    currentDirectUrlFor = '';
+    currentDirectUrlPromise = null;
+    currentDirectUrlPromiseFor = '';
     activeStreamCount = 0;
     restartAttempts = 0;
     lastPlayback = null;
@@ -817,6 +843,9 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     currentYoutubeUrl = normalizedUrl;
     currentDirectUrl = '';
     currentDirectUrlAt = 0;
+    currentDirectUrlFor = '';
+    currentDirectUrlPromise = null;
+    currentDirectUrlPromiseFor = '';
 
     const coordinatorHost = await resolveCoordinatorHost(deviceHost);
     if (coordinatorHost !== deviceHost) {
@@ -844,12 +873,10 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     currentTitle = title;
     currentDurationSec = Number.isFinite(durationSec) ? durationSec : null;
     currentDurationLabel = durationLabel;
-    try {
-        await resolveDirectUrl(normalizedUrl);
-        log('- Direct URL prefetched');
-    } catch (err) {
-        log(`[WARN] Direct URL prefetch failed: ${err.message}`);
-    }
+    const prefetchStartedAt = Date.now();
+    void resolveDirectUrl(normalizedUrl)
+        .then(() => log(`- Direct URL prefetched (${Date.now() - prefetchStartedAt}ms)`))
+        .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
     const normalizedTitle = truncate(normalizeTitle(title), 120);
     const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
     const safeTitle = escapeXml(normalizedTitle);
@@ -1037,9 +1064,10 @@ app.get('/sonons.mp3', async (req, res) => {
     }
 
     let directUrl;
+    const directUrlStartedAt = Date.now();
     try {
         directUrl = await resolveDirectUrl(currentYoutubeUrl);
-        log('- Direct URL resolved');
+        log(`- Direct URL resolved (${Date.now() - directUrlStartedAt}ms)`);
     } catch (err) {
         log(`[ERR] Direct URL failed: ${err.message}`);
         markClosed();
@@ -1116,6 +1144,7 @@ app.get('/sonons.mp3', async (req, res) => {
         if (code && code !== 0 && !closed) {
             currentDirectUrl = '';
             currentDirectUrlAt = 0;
+            currentDirectUrlFor = '';
         }
     });
 });
