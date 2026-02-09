@@ -1080,11 +1080,6 @@ app.get('/sonons.mp3', async (req, res) => {
         log(`STREAM CLOSED.`);
         markClosed();
         ff.kill();
-        setTimeout(() => {
-            if (!endedNaturally) {
-                scheduleRestart('client closed');
-            }
-        }, 600);
     });
 
     res.on('error', (e) => {
@@ -1092,11 +1087,6 @@ app.get('/sonons.mp3', async (req, res) => {
             log(`STREAM EPIPE (client closed).`);
             markClosed();
             ff.kill();
-            setTimeout(() => {
-                if (!endedNaturally) {
-                    scheduleRestart('epipe');
-                }
-            }, 600);
             return;
         }
         log(`RES Error: ${e.message}`);
@@ -1122,7 +1112,8 @@ app.get('/sonons.mp3', async (req, res) => {
                 }, 400);
             }
         }
-        if (code && code !== 0) {
+        // Keep cached direct URL on client disconnect; only clear on real stream failures.
+        if (code && code !== 0 && !closed) {
             currentDirectUrl = '';
             currentDirectUrlAt = 0;
         }
