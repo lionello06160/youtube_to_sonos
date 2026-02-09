@@ -985,31 +985,26 @@ app.get('/sonons.mp3', async (req, res) => {
         res.socket.setTimeout(0);
     }
 
-    const ytExtractorArgs = 'youtube:player_client=android,web';
+    const ytExtractorArgs = 'youtube:player_client=web';
     const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-    let directUrl;
-    try {
-        directUrl = await resolveDirectUrl(currentYoutubeUrl, ytExtractorArgs, ytUserAgent);
-        log(`- Direct URL resolved`);
-    } catch (err) {
-        log(`[ERR] Direct URL failed: ${err.message}`);
-        markClosed();
-        res.end();
-        return;
-    }
+    const ytArgs = [
+        '--no-warnings',
+        '--no-playlist',
+        '--extractor-args', ytExtractorArgs,
+        '--user-agent', ytUserAgent,
+        '-f', 'bestaudio/best',
+        '-o', '-',
+        currentYoutubeUrl
+    ];
+    const yt = spawn('yt-dlp', ytArgs);
 
     const ffArgs = [
         '-hide_banner',
         '-loglevel', 'error',
-        '-reconnect', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-reconnect_at_eof', '1',
-        '-user_agent', ytUserAgent,
         '-fflags', '+nobuffer',
         '-analyzeduration', '0',
         '-probesize', '32k',
-        '-i', directUrl,
+        '-i', 'pipe:0',
         '-vn', '-sn', '-dn',
         '-acodec', 'libmp3lame',
         '-b:a', '192k',
@@ -1018,6 +1013,13 @@ app.get('/sonons.mp3', async (req, res) => {
         'pipe:1'
     ];
     const ff = spawn('ffmpeg', ffArgs);
+
+    yt.stdout.pipe(ff.stdin);
+
+    let ytErr = '';
+    yt.stderr.on('data', (chunk) => {
+        if (ytErr.length < 2000) ytErr += chunk.toString();
+    });
 
     let ffErr = '';
     ff.stderr.on('data', (chunk) => {
@@ -1030,6 +1032,7 @@ app.get('/sonons.mp3', async (req, res) => {
         log(`STREAM CLOSED.`);
         markClosed();
         ff.kill();
+        yt.kill();
         setTimeout(() => {
             if (!endedNaturally) {
                 scheduleRestart('client closed');
@@ -1042,6 +1045,7 @@ app.get('/sonons.mp3', async (req, res) => {
             log(`STREAM EPIPE (client closed).`);
             markClosed();
             ff.kill();
+            yt.kill();
             setTimeout(() => {
                 if (!endedNaturally) {
                     scheduleRestart('epipe');
@@ -1057,6 +1061,17 @@ app.get('/sonons.mp3', async (req, res) => {
             return;
         }
         log(`FF stdout error: ${e.message}`);
+    });
+    ff.stdin.on('error', (e) => {
+        if (isEpipe(e)) {
+            return;
+        }
+        log(`FF stdin error: ${e.message}`);
+    });
+    yt.on('error', (e) => log(`YT Error: ${e.message}`));
+    yt.on('close', (code) => {
+        log(`YT Exit: code=${code ?? 'null'}`);
+        if (ytErr) log(`YT Stderr: ${ytErr.replace(/\s+/g, ' ').trim()}`);
     });
     ff.on('error', (e) => log(`FF Error: ${e.message}`));
     ff.on('close', (code, signal) => {
