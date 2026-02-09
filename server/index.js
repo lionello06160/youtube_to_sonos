@@ -93,6 +93,16 @@ const formatDuration = (seconds) => {
     }
     return `${mins}:${String(secs).padStart(2, '0')}`;
 };
+const parseDurationToSeconds = (value = '') => {
+    const text = String(value || '').trim();
+    if (!text) return null;
+    const parts = text.split(':').map((part) => Number(part));
+    if (!parts.length || parts.some((part) => Number.isNaN(part) || part < 0)) return null;
+    if (parts.length === 1) return parts[0];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return null;
+};
 
 const readJsonFile = (filePath) => {
     if (!fs.existsSync(filePath)) return null;
@@ -370,8 +380,11 @@ const buildTrackFromEntry = (entry = {}) => {
         typeof entry.url === 'string' && /^https?:/i.test(entry.url)
             ? entry.url
             : `https://www.youtube.com/watch?v=${id}`;
-    const durationSec = Number.isFinite(entry.duration) ? Number(entry.duration) : null;
-    const durationLabel = entry.duration_string || (durationSec ? formatDuration(durationSec) : null);
+    const rawDurationSec = Number.isFinite(entry.duration)
+        ? Number(entry.duration)
+        : parseDurationToSeconds(entry.duration_string || '');
+    const durationSec = Number.isFinite(rawDurationSec) ? rawDurationSec : null;
+    const durationLabel = entry.duration_string || (durationSec != null ? formatDuration(durationSec) : null);
     return {
         uid: crypto.randomUUID(),
         id,
@@ -443,7 +456,11 @@ const advancePlaylist = async (deviceHost) => {
         playlistCurrentUid = nextTrack.uid;
         persistPlaylistState();
 
-        await startPlayback(deviceHost, nextTrack.url);
+        await startPlayback(deviceHost, nextTrack.url, {
+            title: nextTrack.title,
+            durationSec: nextTrack.durationSec,
+            durationLabel: nextTrack.durationLabel
+        });
     } catch (err) {
         if (isPlaybackSupersededError(err)) {
             log('- Playlist advance superseded by newer playback request.');
@@ -736,7 +753,11 @@ app.post('/playlist/remove', async (req, res) => {
         persistPlaylistState();
         if (playlistMode && lastPlayback?.deviceHost) {
             try {
-                await startPlayback(lastPlayback.deviceHost, nextTrack.url);
+                await startPlayback(lastPlayback.deviceHost, nextTrack.url, {
+                    title: nextTrack.title,
+                    durationSec: nextTrack.durationSec,
+                    durationLabel: nextTrack.durationLabel
+                });
             } catch (err) {
                 if (isPlaybackSupersededError(err)) {
                     log('- Auto-play after remove superseded by newer playback request.');
@@ -781,7 +802,11 @@ app.post('/playlist/start', async (req, res) => {
     }
     persistPlaylistState();
     try {
-        const { title } = await startPlayback(deviceHost, track.url);
+        const { title } = await startPlayback(deviceHost, track.url, {
+            title: track.title,
+            durationSec: track.durationSec,
+            durationLabel: track.durationLabel
+        });
         res.send({ status: 'playing', title, index });
     } catch (err) {
         if (isPlaybackSupersededError(err)) {
@@ -863,7 +888,7 @@ app.post('/group', async (req, res) => {
     }
 });
 
-const startPlayback = async (deviceHost, youtubeUrl) => {
+const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     const startToken = ++playbackStartToken;
     const playbackStartedAt = Date.now();
     const assertStillLatest = () => {
@@ -912,10 +937,13 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
     const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
     const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
-    let title = 'Sonons Audio';
+    const fallbackTitle = typeof fallbackMeta?.title === 'string' ? fallbackMeta.title.trim() : '';
+    const fallbackDurationSec = Number.isFinite(fallbackMeta?.durationSec) ? Number(fallbackMeta.durationSec) : null;
+    const fallbackDurationLabel = typeof fallbackMeta?.durationLabel === 'string' ? fallbackMeta.durationLabel.trim() : '';
+    let title = fallbackTitle || 'Sonons Audio';
     let art = '';
-    let durationSec = null;
-    let durationLabel = null;
+    let durationSec = fallbackDurationSec;
+    let durationLabel = fallbackDurationLabel || (durationSec != null ? formatDuration(durationSec) : null);
     try {
         const { stdout } = await execPromise(
             `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
