@@ -304,13 +304,16 @@ const scheduleDailyStart = () => {
     }, delay);
 };
 
-const resolveDirectUrl = async (youtubeUrl, ytExtractorArgs, ytUserAgent) => {
+const resolveDirectUrl = async (youtubeUrl) => {
     const now = Date.now();
     if (currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
         return currentDirectUrl;
     }
+    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
+    const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
+    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     const { stdout } = await execPromise(
-        `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" -f "bestaudio/best" -g "${youtubeUrl}"`,
+        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${youtubeUrl}"`,
         { maxBuffer: 1024 * 1024 }
     );
     const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -841,6 +844,12 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     currentTitle = title;
     currentDurationSec = Number.isFinite(durationSec) ? durationSec : null;
     currentDurationLabel = durationLabel;
+    try {
+        await resolveDirectUrl(normalizedUrl);
+        log('- Direct URL prefetched');
+    } catch (err) {
+        log(`[WARN] Direct URL prefetch failed: ${err.message}`);
+    }
     const normalizedTitle = truncate(normalizeTitle(title), 120);
     const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
     const safeTitle = escapeXml(normalizedTitle);
@@ -1027,35 +1036,30 @@ app.get('/sonons.mp3', async (req, res) => {
         res.socket.setTimeout(0);
     }
 
-    const ytArgs = [
-        '--no-config',
-        '--no-warnings',
-        '--no-progress',
-        '--no-playlist',
-        '--extractor-args', YT_EXTRACTOR_ARGS,
-        '--user-agent', YT_USER_AGENT,
-        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-        '-o', '-',
-        currentYoutubeUrl
-    ];
-    if (YT_COOKIES) {
-        ytArgs.splice(2, 0, '--cookies', YT_COOKIES);
+    let directUrl;
+    try {
+        directUrl = await resolveDirectUrl(currentYoutubeUrl);
+        log('- Direct URL resolved');
+    } catch (err) {
+        log(`[ERR] Direct URL failed: ${err.message}`);
+        markClosed();
+        res.end();
+        return;
     }
-    if (YT_JS_RUNTIME) {
-        ytArgs.splice(2, 0, '--js-runtimes', YT_JS_RUNTIME);
-    }
-    if (YT_FORCE_IPV4) {
-        ytArgs.splice(2, 0, '-4');
-    }
-    const yt = spawn('yt-dlp', ytArgs);
 
     const ffArgs = [
         '-hide_banner',
         '-loglevel', 'error',
+        '-reconnect', '1',
+        '-reconnect_streamed', '1',
+        '-reconnect_delay_max', '3',
+        '-reconnect_at_eof', '1',
+        '-user_agent', YT_USER_AGENT,
+        '-headers', 'Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n',
         '-fflags', '+nobuffer',
         '-analyzeduration', '0',
         '-probesize', '32k',
-        '-i', 'pipe:0',
+        '-i', directUrl,
         '-vn', '-sn', '-dn',
         '-acodec', 'libmp3lame',
         '-b:a', '192k',
@@ -1064,13 +1068,6 @@ app.get('/sonons.mp3', async (req, res) => {
         'pipe:1'
     ];
     const ff = spawn('ffmpeg', ffArgs);
-
-    yt.stdout.pipe(ff.stdin);
-
-    let ytErr = '';
-    yt.stderr.on('data', (chunk) => {
-        if (ytErr.length < 2000) ytErr += chunk.toString();
-    });
 
     let ffErr = '';
     ff.stderr.on('data', (chunk) => {
@@ -1083,7 +1080,6 @@ app.get('/sonons.mp3', async (req, res) => {
         log(`STREAM CLOSED.`);
         markClosed();
         ff.kill();
-        yt.kill();
         setTimeout(() => {
             if (!endedNaturally) {
                 scheduleRestart('client closed');
@@ -1096,7 +1092,6 @@ app.get('/sonons.mp3', async (req, res) => {
             log(`STREAM EPIPE (client closed).`);
             markClosed();
             ff.kill();
-            yt.kill();
             setTimeout(() => {
                 if (!endedNaturally) {
                     scheduleRestart('epipe');
@@ -1112,20 +1107,6 @@ app.get('/sonons.mp3', async (req, res) => {
             return;
         }
         log(`FF stdout error: ${e.message}`);
-    });
-    ff.stdin.on('error', (e) => {
-        if (isEpipe(e)) {
-            return;
-        }
-        log(`FF stdin error: ${e.message}`);
-    });
-    yt.on('error', (e) => log(`YT Error: ${e.message}`));
-    yt.on('close', (code) => {
-        log(`YT Exit: code=${code ?? 'null'}`);
-        if (ytErr) log(`YT Stderr: ${ytErr.replace(/\s+/g, ' ').trim()}`);
-        if (code && code !== 0) {
-            ff.kill();
-        }
     });
     ff.on('error', (e) => log(`FF Error: ${e.message}`));
     ff.on('close', (code, signal) => {
