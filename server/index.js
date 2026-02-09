@@ -410,6 +410,9 @@ const advancePlaylist = async (deviceHost) => {
 log(`BOOT: Starting Sonons v${VERSION}...`);
 loadAutoConfig();
 loadPlaylistState();
+if (YT_COOKIES) {
+    log(`YT cookies enabled: ${YT_COOKIES}`);
+}
 scheduleDailyStop();
 scheduleDailyStart();
 if (autoConfig.autoPlayOnBoot && autoConfig.autoPlayUrl && autoConfig.autoPlayDeviceHost) {
@@ -813,8 +816,9 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     }
     const ytExtractorArgs = 'youtube:player_client=android,web';
     const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
     const { stdout } = await execPromise(
-        `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
+        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag} --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
         { maxBuffer: 1024 * 1024 }
     );
     const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -1015,11 +1019,13 @@ app.get('/sonons.mp3', async (req, res) => {
     const ytExtractorArgs = 'youtube:player_client=android,web';
     const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     const ytArgs = [
+        '--no-config',
         '--no-warnings',
+        '--no-progress',
         '--no-playlist',
         '--extractor-args', ytExtractorArgs,
         '--user-agent', ytUserAgent,
-        '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
+        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         '-o', '-',
         currentYoutubeUrl
     ];
