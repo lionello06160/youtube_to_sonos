@@ -105,6 +105,9 @@ function App() {
   const [dragUid, setDragUid] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const actionLockRef = useRef(false);
+  const [buttonFxKey, setButtonFxKey] = useState<string | null>(null);
+  const [buttonBusyKey, setButtonBusyKey] = useState<string | null>(null);
+  const [buttonDoneKey, setButtonDoneKey] = useState<string | null>(null);
   const [uiAction, setUiAction] = useState<{
     kind: 'idle' | 'play' | 'playlistStart' | 'stop';
     trackIndex: number | null;
@@ -117,6 +120,18 @@ function App() {
   const showToast = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(null), 3500);
+  };
+  const triggerButtonFx = (key: string) => {
+    setButtonFxKey(key);
+    window.setTimeout(() => {
+      setButtonFxKey((prev) => (prev === key ? null : prev));
+    }, 180);
+  };
+  const markButtonDone = (key: string) => {
+    setButtonDoneKey(key);
+    window.setTimeout(() => {
+      setButtonDoneKey((prev) => (prev === key ? null : prev));
+    }, 700);
   };
 
   const runWithActionLock = async (
@@ -318,7 +333,11 @@ function App() {
       showToast('請先選擇播放裝置');
       return;
     }
+    const trackUid = playlistItems[index]?.uid || String(index);
+    const playKey = `play-${trackUid}`;
+    triggerButtonFx(playKey);
     await runWithActionLock('playlistStart', async () => {
+      setButtonBusyKey(playKey);
       setBroadcasting(true);
       if (selectedHosts.length > 1) {
         try {
@@ -336,16 +355,21 @@ function App() {
           index
         });
         setPlaylistIndex(index);
+        markButtonDone(playKey);
         showToast('Playlist started');
       } catch (err: any) {
         showToast('Playlist start failed');
       } finally {
+        setButtonBusyKey((prev) => (prev === playKey ? null : prev));
         setBroadcasting(false);
       }
     }, index);
   };
 
   const handlePlaylistRemove = async (uid: string) => {
+    const deleteKey = `delete-${uid}`;
+    triggerButtonFx(deleteKey);
+    setButtonBusyKey(deleteKey);
     try {
       const res = await axios.post(`${API_URL}/playlist/remove`, { uid });
       setPlaylistItems(res.data.items || []);
@@ -354,8 +378,12 @@ function App() {
       } else {
         setPlaylistIndex(null);
       }
+      markButtonDone(deleteKey);
+      showToast('Removed from playlist');
     } catch (err: any) {
       showToast('Remove failed');
+    } finally {
+      setButtonBusyKey((prev) => (prev === deleteKey ? null : prev));
     }
   };
 
@@ -364,6 +392,7 @@ function App() {
     setLoopMode(value);
     try {
       await axios.post(`${API_URL}/playlist/mode`, { loopMode: value });
+      showToast(`Loop mode: ${value}`);
     } catch (err: any) {
       setLoopMode(previous);
       showToast('Mode update failed');
@@ -623,6 +652,9 @@ function App() {
                 <div className="space-y-3">
                   {playlistItems.map((track, index) => {
                     const isCurrent = playlistIndex === index && nowPlaying?.isPlaying;
+                    const playKey = `play-${track.uid}`;
+                    const deleteKey = `delete-${track.uid}`;
+                    const isPlayBusy = (uiAction.kind === 'playlistStart' && uiAction.trackIndex === index) || buttonBusyKey === playKey;
                     return (
                       <div
                         key={track.uid}
@@ -655,12 +687,12 @@ function App() {
                           <button
                             onClick={() => handlePlaylistStart(index)}
                             disabled={actionBusy || selectedHosts.length === 0}
-                            className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                            className={`playlist-action-btn px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed ${buttonFxKey === playKey ? 'is-pressed' : ''} ${buttonBusyKey === playKey ? 'is-busy' : ''} ${buttonDoneKey === playKey ? 'is-done' : ''}`}
                             aria-label="Play track"
                             title="Play"
                           >
-                            <span className={`material-symbols-outlined text-[18px] ${uiAction.kind === 'playlistStart' && uiAction.trackIndex === index ? 'animate-spin' : ''}`}>
-                              {uiAction.kind === 'playlistStart' && uiAction.trackIndex === index ? 'progress_activity' : 'play_arrow'}
+                            <span className={`material-symbols-outlined text-[18px] ${isPlayBusy ? 'animate-spin' : ''}`}>
+                              {isPlayBusy ? 'progress_activity' : 'play_arrow'}
                             </span>
                           </button>
                           <button
@@ -668,11 +700,14 @@ function App() {
                               e.stopPropagation();
                               handlePlaylistRemove(track.uid);
                             }}
-                            className="px-3 py-2 rounded-lg border border-rose-500/30 text-rose-200 text-xs font-bold uppercase tracking-widest hover:bg-rose-500/10 transition-all"
+                            disabled={actionBusy || buttonBusyKey === deleteKey}
+                            className={`playlist-action-btn playlist-action-btn-danger px-3 py-2 rounded-lg border border-rose-500/30 text-rose-200 text-xs font-bold uppercase tracking-widest hover:bg-rose-500/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed ${buttonFxKey === deleteKey ? 'is-pressed' : ''} ${buttonBusyKey === deleteKey ? 'is-busy' : ''} ${buttonDoneKey === deleteKey ? 'is-done' : ''}`}
                             aria-label="Delete track"
                             title="Delete"
                           >
-                            <span className="material-symbols-outlined text-[18px]">delete</span>
+                            <span className={`material-symbols-outlined text-[18px] ${buttonBusyKey === deleteKey ? 'animate-spin' : ''}`}>
+                              {buttonBusyKey === deleteKey ? 'progress_activity' : 'delete'}
+                            </span>
                           </button>
                         </div>
                       </div>
