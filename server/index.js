@@ -16,6 +16,9 @@ const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
 const DEFAULT_LOOP_MODE = 'all';
 const YT_COOKIES = process.env.YT_COOKIES || '';
 const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || '';
+const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_client=android';
+const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() !== 'false';
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -416,6 +419,10 @@ if (YT_COOKIES) {
 }
 if (YT_JS_RUNTIME) {
     log(`YT JS runtime: ${YT_JS_RUNTIME}`);
+}
+log(`YT extractor args: ${YT_EXTRACTOR_ARGS}`);
+if (YT_FORCE_IPV4) {
+    log('YT force IPv4 enabled');
 }
 scheduleDailyStop();
 scheduleDailyStart();
@@ -818,12 +825,11 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     } catch (err) {
         log(`[WARN] Preflight stop failed: ${err.message}`);
     }
-    const ytExtractorArgs = 'youtube:player_client=android,web';
-    const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
     const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
+    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     const { stdout } = await execPromise(
-        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag} --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
+        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
         { maxBuffer: 1024 * 1024 }
     );
     const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -1021,15 +1027,13 @@ app.get('/sonons.mp3', async (req, res) => {
         res.socket.setTimeout(0);
     }
 
-    const ytExtractorArgs = 'youtube:player_client=android,web';
-    const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     const ytArgs = [
         '--no-config',
         '--no-warnings',
         '--no-progress',
         '--no-playlist',
-        '--extractor-args', ytExtractorArgs,
-        '--user-agent', ytUserAgent,
+        '--extractor-args', YT_EXTRACTOR_ARGS,
+        '--user-agent', YT_USER_AGENT,
         '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         '-o', '-',
         currentYoutubeUrl
@@ -1039,6 +1043,9 @@ app.get('/sonons.mp3', async (req, res) => {
     }
     if (YT_JS_RUNTIME) {
         ytArgs.splice(2, 0, '--js-runtimes', YT_JS_RUNTIME);
+    }
+    if (YT_FORCE_IPV4) {
+        ytArgs.splice(2, 0, '-4');
     }
     const yt = spawn('yt-dlp', ytArgs);
 
