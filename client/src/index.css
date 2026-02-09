@@ -325,6 +325,57 @@ body {
   animation: ping 2s ease-in-out infinite;
 }
 
+.transport-cluster {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.9rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(8px);
+}
+
+.transport-btn {
+  width: 64px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.88);
+  transition: transform 0.12s ease, background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.transport-btn + .transport-btn {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.transport-btn:active {
+  transform: scale(0.93);
+}
+
+.transport-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.transport-btn-play:hover:not(:disabled) {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.13);
+}
+
+.transport-btn-stop:hover:not(:disabled) {
+  color: #fda4af;
+  background: rgba(244, 63, 94, 0.13);
+}
+
+.transport-btn.is-busy {
+  box-shadow: inset 0 0 0 1px rgba(34, 197, 94, 0.25), 0 0 14px rgba(34, 197, 94, 0.25);
+}
+
+.transport-btn-stop.is-busy {
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.3), 0 0 12px rgba(251, 113, 133, 0.22);
+}
+
 .playlist-action-btn {
   position: relative;
   transform: translateZ(0);

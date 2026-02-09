@@ -116,6 +116,8 @@ function App() {
   const selectedMaster = selectedHosts[0];
   const onlineCount = devices.length;
   const actionBusy = uiAction.kind !== 'idle';
+  const playButtonBusy = uiAction.kind === 'play';
+  const stopButtonBusy = uiAction.kind === 'stop';
 
   const showToast = (message: string) => {
     setToast(message);
@@ -771,14 +773,6 @@ function App() {
               </div>
             </div>
             <button
-              onClick={handlePlay}
-              disabled={!youtubeUrl || selectedHosts.length === 0 || broadcasting || actionBusy}
-              className="btn-primary w-full md:w-auto px-8 py-3 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary/90 transition-all shadow-[0_0_20px_rgba(34,197,94,0.4)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className={`material-symbols-outlined text-[20px] ${(broadcasting || actionBusy) ? 'animate-spin' : ''}`}>{(broadcasting || actionBusy) ? 'progress_activity' : 'play_arrow'}</span>
-              {(broadcasting || actionBusy) ? 'Processing...' : 'Start Broadcast'}
-            </button>
-            <button
               onClick={handleAddToPlaylist}
               disabled={!youtubeUrl || playlistLoading || actionBusy}
               className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
@@ -786,16 +780,30 @@ function App() {
               <span className="material-symbols-outlined text-[20px]">playlist_add</span>
               Add to Playlist
             </button>
-            <button
-              onClick={handleStop}
-              disabled={selectedHosts.length === 0 || actionBusy}
-              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              <span className={`material-symbols-outlined text-[20px] ${uiAction.kind === 'stop' ? 'animate-spin' : ''}`}>
-                {uiAction.kind === 'stop' ? 'progress_activity' : 'stop'}
-              </span>
-              Stop
-            </button>
+            <div className="transport-cluster w-full md:w-auto">
+              <button
+                onClick={handlePlay}
+                disabled={!youtubeUrl || selectedHosts.length === 0 || broadcasting || actionBusy}
+                className={`transport-btn transport-btn-play ${playButtonBusy ? 'is-busy' : ''}`}
+                aria-label="Start Broadcast"
+                title={playButtonBusy ? 'Processing...' : 'Start Broadcast'}
+              >
+                <span className={`material-symbols-outlined text-[22px] ${playButtonBusy ? 'animate-spin' : ''}`}>
+                  {playButtonBusy ? 'progress_activity' : 'play_arrow'}
+                </span>
+              </button>
+              <button
+                onClick={handleStop}
+                disabled={selectedHosts.length === 0 || actionBusy}
+                className={`transport-btn transport-btn-stop ${stopButtonBusy ? 'is-busy' : ''}`}
+                aria-label="Stop"
+                title={stopButtonBusy ? 'Stopping...' : 'Stop'}
+              >
+                <span className={`material-symbols-outlined text-[20px] ${stopButtonBusy ? 'animate-spin' : ''}`}>
+                  {stopButtonBusy ? 'progress_activity' : 'stop'}
+                </span>
+              </button>
+            </div>
           </div>
         </footer>
       </main>
