@@ -14,6 +14,7 @@ const HOST_IP = '10.10.4.14';
 const VERSION = '8.0 (Clean URI)';
 const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
 const DEFAULT_LOOP_MODE = 'all';
+const YT_COOKIES = process.env.YT_COOKIES || '';
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -468,6 +469,28 @@ const truncate = (value, max = 120) => {
     return value.slice(0, max - 3) + '...';
 };
 
+const normalizeYoutubeUrl = (input = '') => {
+    const value = String(input || '').trim();
+    if (!value) return value;
+    try {
+        const url = new URL(value);
+        let id = '';
+        if (url.hostname.includes('youtu.be')) {
+            id = url.pathname.replace(/^\/+/, '').split('/')[0] || '';
+        } else if (url.pathname.startsWith('/shorts/')) {
+            id = url.pathname.split('/')[2] || '';
+        } else {
+            id = url.searchParams.get('v') || '';
+        }
+        if (id) {
+            return `https://www.youtube.com/watch?v=${id}`;
+        }
+    } catch (err) {
+        // fallthrough
+    }
+    return value;
+};
+
 const resetPlaybackState = () => {
     currentYoutubeUrl = '';
     currentTitle = 'Sonons Stream';
@@ -767,10 +790,14 @@ app.post('/group', async (req, res) => {
 });
 
 const startPlayback = async (deviceHost, youtubeUrl) => {
-    log(`SETUP CLEAN PLAY: ${youtubeUrl} on ${deviceHost}`);
+    const normalizedUrl = normalizeYoutubeUrl(youtubeUrl);
+    if (normalizedUrl !== youtubeUrl) {
+        log(`- Normalized URL: ${normalizedUrl}`);
+    }
+    log(`SETUP CLEAN PLAY: ${normalizedUrl} on ${deviceHost}`);
 
     // 1. UPDATE STATE
-    currentYoutubeUrl = youtubeUrl;
+    currentYoutubeUrl = normalizedUrl;
     currentDirectUrl = '';
     currentDirectUrlAt = 0;
 
@@ -787,7 +814,7 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     const ytExtractorArgs = 'youtube:player_client=android,web';
     const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     const { stdout } = await execPromise(
-        `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${youtubeUrl}"`,
+        `yt-dlp --no-warnings --no-playlist --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
         { maxBuffer: 1024 * 1024 }
     );
     const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -985,17 +1012,20 @@ app.get('/sonons.mp3', async (req, res) => {
         res.socket.setTimeout(0);
     }
 
-    const ytExtractorArgs = 'youtube:player_client=web';
+    const ytExtractorArgs = 'youtube:player_client=android,web';
     const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     const ytArgs = [
         '--no-warnings',
         '--no-playlist',
         '--extractor-args', ytExtractorArgs,
         '--user-agent', ytUserAgent,
-        '-f', 'bestaudio/best',
+        '-f', 'bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best',
         '-o', '-',
         currentYoutubeUrl
     ];
+    if (YT_COOKIES) {
+        ytArgs.splice(2, 0, '--cookies', YT_COOKIES);
+    }
     const yt = spawn('yt-dlp', ytArgs);
 
     const ffArgs = [
@@ -1072,6 +1102,9 @@ app.get('/sonons.mp3', async (req, res) => {
     yt.on('close', (code) => {
         log(`YT Exit: code=${code ?? 'null'}`);
         if (ytErr) log(`YT Stderr: ${ytErr.replace(/\s+/g, ' ').trim()}`);
+        if (code && code !== 0) {
+            ff.kill();
+        }
     });
     ff.on('error', (e) => log(`FF Error: ${e.message}`));
     ff.on('close', (code, signal) => {
