@@ -19,8 +19,8 @@ const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || '';
 const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_client=android';
 const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() !== 'false';
-const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 12000);
-const YT_DIRECT_URL_WAIT_MS = Number(process.env.YT_DIRECT_URL_WAIT_MS || 15000);
+const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 5000);
+const YT_DIRECT_URL_WAIT_MS = Math.min(3000, Math.max(0, Number(process.env.YT_DIRECT_URL_WAIT_MS || 1200)));
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
