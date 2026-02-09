@@ -15,6 +15,7 @@ const VERSION = '8.0 (Clean URI)';
 const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
 const DEFAULT_LOOP_MODE = 'all';
 const YT_COOKIES = process.env.YT_COOKIES || '';
+const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || '';
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -412,6 +413,9 @@ loadAutoConfig();
 loadPlaylistState();
 if (YT_COOKIES) {
     log(`YT cookies enabled: ${YT_COOKIES}`);
+}
+if (YT_JS_RUNTIME) {
+    log(`YT JS runtime: ${YT_JS_RUNTIME}`);
 }
 scheduleDailyStop();
 scheduleDailyStart();
@@ -817,8 +821,9 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     const ytExtractorArgs = 'youtube:player_client=android,web';
     const ytUserAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
+    const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
     const { stdout } = await execPromise(
-        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag} --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
+        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag} --extractor-args "${ytExtractorArgs}" --user-agent "${ytUserAgent}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
         { maxBuffer: 1024 * 1024 }
     );
     const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -1031,6 +1036,9 @@ app.get('/sonons.mp3', async (req, res) => {
     ];
     if (YT_COOKIES) {
         ytArgs.splice(2, 0, '--cookies', YT_COOKIES);
+    }
+    if (YT_JS_RUNTIME) {
+        ytArgs.splice(2, 0, '--js-runtimes', YT_JS_RUNTIME);
     }
     const yt = spawn('yt-dlp', ytArgs);
 
