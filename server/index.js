@@ -19,6 +19,7 @@ const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || '';
 const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_client=android';
 const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() !== 'false';
+const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 12000);
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -846,6 +847,10 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     currentDirectUrlFor = '';
     currentDirectUrlPromise = null;
     currentDirectUrlPromiseFor = '';
+    const prefetchStartedAt = Date.now();
+    void resolveDirectUrl(normalizedUrl)
+        .then(() => log(`- Direct URL prefetched (${Date.now() - prefetchStartedAt}ms)`))
+        .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
 
     const coordinatorHost = await resolveCoordinatorHost(deviceHost);
     if (coordinatorHost !== deviceHost) {
@@ -860,23 +865,29 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
     const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
     const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
-    const { stdout } = await execPromise(
-        `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
-        { maxBuffer: 1024 * 1024 }
-    );
-    const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const title = lines[0] || 'Sonons Audio';
-    const art = lines[1] || '';
-    const durationSec = Number(lines[2]);
-    const durationLabel = lines[3] || null;
+    let title = 'Sonons Audio';
+    let art = '';
+    let durationSec = null;
+    let durationLabel = null;
+    try {
+        const { stdout } = await execPromise(
+            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
+            { maxBuffer: 1024 * 1024, timeout: YT_METADATA_TIMEOUT_MS }
+        );
+        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        title = lines[0] || title;
+        art = lines[1] || art;
+        const parsedDuration = Number(lines[2]);
+        durationSec = Number.isFinite(parsedDuration) ? parsedDuration : null;
+        durationLabel = lines[3] || durationLabel;
+    } catch (err) {
+        const shortErr = String(err?.message || err).split('\n')[0];
+        log(`[WARN] Metadata probe failed: ${shortErr}`);
+    }
 
     currentTitle = title;
-    currentDurationSec = Number.isFinite(durationSec) ? durationSec : null;
+    currentDurationSec = durationSec;
     currentDurationLabel = durationLabel;
-    const prefetchStartedAt = Date.now();
-    void resolveDirectUrl(normalizedUrl)
-        .then(() => log(`- Direct URL prefetched (${Date.now() - prefetchStartedAt}ms)`))
-        .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
     const normalizedTitle = truncate(normalizeTitle(title), 120);
     const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
     const safeTitle = escapeXml(normalizedTitle);
