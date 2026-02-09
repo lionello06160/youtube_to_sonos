@@ -32,7 +32,8 @@ let lastPlayback = null;
 let restartTimer = null;
 let restartAttempts = 0;
 const MAX_RESTART_ATTEMPTS = 3;
-const RESTART_WINDOW_MS = 20000;
+const RESTART_BACKOFF_BASE_MS = 1500;
+const FORCED_RESTART_DELAY_MS = 250;
 let currentDirectUrl = '';
 let currentDirectUrlAt = 0;
 let currentDirectUrlFor = '';
@@ -235,23 +236,38 @@ const createPlaybackSupersededError = () => {
     return err;
 };
 const isPlaybackSupersededError = (err) => err?.code === PLAYBACK_SUPERSEDED_CODE;
-const scheduleRestart = (reason) => {
-    if (!lastPlayback) return;
-    const age = Date.now() - lastPlayback.startedAt;
-    if (age > RESTART_WINDOW_MS) {
-        log(`- Restart skipped (too old): ${reason}`);
-        return;
-    }
-    if (restartAttempts >= MAX_RESTART_ATTEMPTS) {
+const scheduleRestart = (reason, options = {}) => {
+    if (!lastPlayback || !currentYoutubeUrl) return;
+    const force = Boolean(options.force);
+    const restartToken = playbackStartToken;
+    const restartUrl = currentYoutubeUrl;
+
+    if (!force && restartAttempts >= MAX_RESTART_ATTEMPTS) {
         log(`- Restart skipped (max attempts): ${reason}`);
         return;
     }
-    if (restartTimer) return;
+    if (restartTimer) {
+        if (!force) return;
+        clearTimeout(restartTimer);
+        restartTimer = null;
+    }
+
+    if (force) {
+        restartAttempts = 0;
+    }
     restartAttempts += 1;
-    const delay = 1500 * restartAttempts;
-    log(`- Auto-restart scheduled in ${delay}ms (${reason})`);
+    const delay = force ? FORCED_RESTART_DELAY_MS : RESTART_BACKOFF_BASE_MS * restartAttempts;
+    log(`- Auto-restart scheduled in ${delay}ms (${reason}${force ? ', forced' : ''})`);
     restartTimer = setTimeout(async () => {
         restartTimer = null;
+        if (restartToken !== playbackStartToken) {
+            log(`- Restart skipped (superseded): ${reason}`);
+            return;
+        }
+        if (!currentYoutubeUrl || currentYoutubeUrl !== restartUrl) {
+            log(`- Restart skipped (URL changed): ${reason}`);
+            return;
+        }
         try {
             const device = new Sonos(lastPlayback.deviceHost);
             log(`- Auto-restart attempt ${restartAttempts}`);
@@ -916,8 +932,8 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
             if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
             log(`- Direct URL prefetched (${elapsedMs}ms)`);
             if (activeStreamCount === 0 && lastPlayback?.deviceHost && lastPlayback.startedAt >= playbackStartedAt) {
-                log('- Direct URL ready while idle, scheduling restart');
-                scheduleRestart('direct URL ready');
+                log('- Direct URL ready while idle, forcing restart');
+                scheduleRestart('direct URL ready', { force: true });
             }
         })
         .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
@@ -1133,6 +1149,13 @@ app.get('/sonons.mp3', async (req, res) => {
         res.end();
         return;
     }
+
+    if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+        log('- Pending restart canceled (stream reconnected)');
+    }
+    restartAttempts = 0;
 
     activeStreamCount += 1;
     const streamToken = playbackStartToken;
