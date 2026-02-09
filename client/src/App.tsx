@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import type { Device, LoopMode, PlaylistTrack } from './types';
 
@@ -104,13 +104,38 @@ function App() {
   const [playlistError, setPlaylistError] = useState<string | null>(null);
   const [dragUid, setDragUid] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const actionLockRef = useRef(false);
+  const [uiAction, setUiAction] = useState<{
+    kind: 'idle' | 'play' | 'playlistStart' | 'stop';
+    trackIndex: number | null;
+  }>({ kind: 'idle', trackIndex: null });
 
   const selectedMaster = selectedHosts[0];
   const onlineCount = devices.length;
+  const actionBusy = uiAction.kind !== 'idle';
 
   const showToast = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(null), 3500);
+  };
+
+  const runWithActionLock = async (
+    kind: 'play' | 'playlistStart' | 'stop',
+    fn: () => Promise<void>,
+    trackIndex: number | null = null
+  ) => {
+    if (actionLockRef.current) {
+      showToast('上一個操作進行中，請稍候');
+      return;
+    }
+    actionLockRef.current = true;
+    setUiAction({ kind, trackIndex });
+    try {
+      await fn();
+    } finally {
+      actionLockRef.current = false;
+      setUiAction({ kind: 'idle', trackIndex: null });
+    }
   };
 
   const fetchDeep = async () => {
@@ -220,42 +245,55 @@ function App() {
   const deselectAll = () => setSelectedHosts([]);
 
   const handlePlay = async () => {
-    if (!youtubeUrl || selectedHosts.length === 0) return;
-    setBroadcasting(true);
-
-    if (selectedHosts.length > 1) {
-      try {
-        await axios.post(`${API_URL}/group`, {
-          masterHost: selectedHosts[0],
-          memberHosts: selectedHosts
-        });
-      } catch (err) {
-        showToast('Grouping failed');
+    if (!youtubeUrl) {
+      showToast('請先貼上 YouTube URL');
+      return;
+    }
+    if (selectedHosts.length === 0) {
+      showToast('請先選擇播放裝置');
+      return;
+    }
+    await runWithActionLock('play', async () => {
+      setBroadcasting(true);
+      if (selectedHosts.length > 1) {
+        try {
+          await axios.post(`${API_URL}/group`, {
+            masterHost: selectedHosts[0],
+            memberHosts: selectedHosts
+          });
+        } catch (err) {
+          showToast('Grouping failed');
+        }
       }
-    }
 
-    try {
-      await axios.post(`${API_URL}/play`, {
-        deviceHost: selectedHosts[0],
-        youtubeUrl
-      });
-      showToast('Broadcast started');
-    } catch (err: any) {
-      showToast('Playback failed');
-    } finally {
-      setBroadcasting(false);
-    }
+      try {
+        await axios.post(`${API_URL}/play`, {
+          deviceHost: selectedHosts[0],
+          youtubeUrl
+        });
+        showToast('Broadcast started');
+      } catch (err: any) {
+        showToast('Playback failed');
+      } finally {
+        setBroadcasting(false);
+      }
+    });
   };
 
   const handleStop = async () => {
-    if (selectedHosts.length === 0) return;
-    try {
-      await axios.post(`${API_URL}/stop`, { deviceHost: selectedHosts[0] });
-      setNowPlaying((prev) => prev ? { ...prev, isPlaying: false, title: null } : prev);
-      showToast('Stopped');
-    } catch (err: any) {
-      showToast('Stop failed');
+    if (selectedHosts.length === 0) {
+      showToast('請先選擇播放裝置');
+      return;
     }
+    await runWithActionLock('stop', async () => {
+      try {
+        await axios.post(`${API_URL}/stop`, { deviceHost: selectedHosts[0] });
+        setNowPlaying((prev) => prev ? { ...prev, isPlaying: false, title: null } : prev);
+        showToast('Stopped');
+      } catch (err: any) {
+        showToast('Stop failed');
+      }
+    });
   };
 
   const handleAddToPlaylist = async () => {
@@ -276,30 +314,35 @@ function App() {
   };
 
   const handlePlaylistStart = async (index: number) => {
-    if (selectedHosts.length === 0) return;
-    setBroadcasting(true);
-    if (selectedHosts.length > 1) {
-      try {
-        await axios.post(`${API_URL}/group`, {
-          masterHost: selectedHosts[0],
-          memberHosts: selectedHosts
-        });
-      } catch (err) {
-        showToast('Grouping failed');
+    if (selectedHosts.length === 0) {
+      showToast('請先選擇播放裝置');
+      return;
+    }
+    await runWithActionLock('playlistStart', async () => {
+      setBroadcasting(true);
+      if (selectedHosts.length > 1) {
+        try {
+          await axios.post(`${API_URL}/group`, {
+            masterHost: selectedHosts[0],
+            memberHosts: selectedHosts
+          });
+        } catch (err) {
+          showToast('Grouping failed');
+        }
       }
-    }
-    try {
-      await axios.post(`${API_URL}/playlist/start`, {
-        deviceHost: selectedHosts[0],
-        index
-      });
-      setPlaylistIndex(index);
-      showToast('Playlist started');
-    } catch (err: any) {
-      showToast('Playlist start failed');
-    } finally {
-      setBroadcasting(false);
-    }
+      try {
+        await axios.post(`${API_URL}/playlist/start`, {
+          deviceHost: selectedHosts[0],
+          index
+        });
+        setPlaylistIndex(index);
+        showToast('Playlist started');
+      } catch (err: any) {
+        showToast('Playlist start failed');
+      } finally {
+        setBroadcasting(false);
+      }
+    }, index);
   };
 
   const handlePlaylistRemove = async (uid: string) => {
@@ -547,6 +590,7 @@ function App() {
                   <select
                     value={loopMode}
                     onChange={(e) => handleLoopModeChange(e.target.value as LoopMode)}
+                    disabled={actionBusy}
                     className="bg-white/5 border border-white/10 text-white text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-primary"
                   >
                     <option value="single">Single</option>
@@ -610,11 +654,14 @@ function App() {
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => handlePlaylistStart(index)}
-                            className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all"
+                            disabled={actionBusy || selectedHosts.length === 0}
+                            className="px-4 py-2 rounded-lg bg-primary/20 border border-primary/40 text-primary text-xs font-bold uppercase tracking-widest hover:bg-primary/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                             aria-label="Play track"
                             title="Play"
                           >
-                            <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+                            <span className={`material-symbols-outlined text-[18px] ${uiAction.kind === 'playlistStart' && uiAction.trackIndex === index ? 'animate-spin' : ''}`}>
+                              {uiAction.kind === 'playlistStart' && uiAction.trackIndex === index ? 'progress_activity' : 'play_arrow'}
+                            </span>
                           </button>
                           <button
                             onClick={(e) => {
@@ -690,15 +737,15 @@ function App() {
             </div>
             <button
               onClick={handlePlay}
-              disabled={!youtubeUrl || selectedHosts.length === 0 || broadcasting}
+              disabled={!youtubeUrl || selectedHosts.length === 0 || broadcasting || actionBusy}
               className="btn-primary w-full md:w-auto px-8 py-3 rounded-xl bg-primary text-white font-bold text-sm hover:bg-primary/90 transition-all shadow-[0_0_20px_rgba(34,197,94,0.4)] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <span className={`material-symbols-outlined text-[20px] ${broadcasting ? 'animate-spin' : ''}`}>{broadcasting ? 'progress_activity' : 'play_arrow'}</span>
-              {broadcasting ? 'Broadcasting' : 'Start Broadcast'}
+              <span className={`material-symbols-outlined text-[20px] ${(broadcasting || actionBusy) ? 'animate-spin' : ''}`}>{(broadcasting || actionBusy) ? 'progress_activity' : 'play_arrow'}</span>
+              {(broadcasting || actionBusy) ? 'Processing...' : 'Start Broadcast'}
             </button>
             <button
               onClick={handleAddToPlaylist}
-              disabled={!youtubeUrl || playlistLoading}
+              disabled={!youtubeUrl || playlistLoading || actionBusy}
               className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               <span className="material-symbols-outlined text-[20px]">playlist_add</span>
@@ -706,10 +753,13 @@ function App() {
             </button>
             <button
               onClick={handleStop}
-              disabled={selectedHosts.length === 0}
-              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled={selectedHosts.length === 0 || actionBusy}
+              className="btn-secondary w-full md:w-auto px-6 py-3 rounded-xl border border-white/10 text-white/80 font-bold text-sm hover:text-white hover:bg-white/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
-              <span className="material-symbols-outlined text-[20px]">stop</span>
+              <span className={`material-symbols-outlined text-[20px] ${uiAction.kind === 'stop' ? 'animate-spin' : ''}`}>
+                {uiAction.kind === 'stop' ? 'progress_activity' : 'stop'}
+              </span>
+              Stop
             </button>
           </div>
         </footer>

@@ -61,6 +61,8 @@ let loopMode = DEFAULT_LOOP_MODE;
 let shuffleOrder = [];
 let shufflePos = 0;
 let playlistAdvanceLock = false;
+let playbackStartToken = 0;
+const PLAYBACK_SUPERSEDED_CODE = 'PLAYBACK_SUPERSEDED';
 
 const parseTime = (value) => {
     if (!value || typeof value !== 'string') return null;
@@ -217,6 +219,12 @@ const withRetry = async (fn, { label, attempts = 3, baseDelay = 300 } = {}) => {
     }
     throw lastErr;
 };
+const createPlaybackSupersededError = () => {
+    const err = new Error('playback superseded by newer request');
+    err.code = PLAYBACK_SUPERSEDED_CODE;
+    return err;
+};
+const isPlaybackSupersededError = (err) => err?.code === PLAYBACK_SUPERSEDED_CODE;
 const scheduleRestart = (reason) => {
     if (!lastPlayback) return;
     const age = Date.now() - lastPlayback.startedAt;
@@ -305,6 +313,10 @@ const scheduleDailyStart = () => {
             await startPlayback(autoConfig.autoPlayDeviceHost, autoConfig.autoPlayUrl);
             log('Daily start: playback started.');
         } catch (err) {
+            if (isPlaybackSupersededError(err)) {
+                log('- Daily start superseded by newer playback request.');
+                return;
+            }
             log(`[WARN] Daily start failed: ${err.message}`);
         } finally {
             scheduleDailyStart();
@@ -433,6 +445,10 @@ const advancePlaylist = async (deviceHost) => {
 
         await startPlayback(deviceHost, nextTrack.url);
     } catch (err) {
+        if (isPlaybackSupersededError(err)) {
+            log('- Playlist advance superseded by newer playback request.');
+            return;
+        }
         log(`[WARN] Playlist advance failed: ${err.message}`);
     } finally {
         playlistAdvanceLock = false;
@@ -460,6 +476,10 @@ if (autoConfig.autoPlayOnBoot && autoConfig.autoPlayUrl && autoConfig.autoPlayDe
             await startPlayback(autoConfig.autoPlayDeviceHost, autoConfig.autoPlayUrl);
             log('Auto play on boot started.');
         } catch (err) {
+            if (isPlaybackSupersededError(err)) {
+                log('- Auto play on boot superseded by newer playback request.');
+                return;
+            }
             log(`[WARN] Auto play on boot failed: ${err.message}`);
         }
     }, 8000);
@@ -718,6 +738,10 @@ app.post('/playlist/remove', async (req, res) => {
             try {
                 await startPlayback(lastPlayback.deviceHost, nextTrack.url);
             } catch (err) {
+                if (isPlaybackSupersededError(err)) {
+                    log('- Auto-play after remove superseded by newer playback request.');
+                    return;
+                }
                 log(`[WARN] Auto-play after remove failed: ${err.message}`);
             }
         }
@@ -760,6 +784,11 @@ app.post('/playlist/start', async (req, res) => {
         const { title } = await startPlayback(deviceHost, track.url);
         res.send({ status: 'playing', title, index });
     } catch (err) {
+        if (isPlaybackSupersededError(err)) {
+            log(`[WARN] Playlist start superseded: ${err.message}`);
+            res.status(409).send(err.message);
+            return;
+        }
         log(`[ERR] Playlist start: ${err.message}`);
         res.status(500).send(err.message);
     }
@@ -835,6 +864,12 @@ app.post('/group', async (req, res) => {
 });
 
 const startPlayback = async (deviceHost, youtubeUrl) => {
+    const startToken = ++playbackStartToken;
+    const assertStillLatest = () => {
+        if (startToken !== playbackStartToken) {
+            throw createPlaybackSupersededError();
+        }
+    };
     const normalizedUrl = normalizeYoutubeUrl(youtubeUrl);
     if (normalizedUrl !== youtubeUrl) {
         log(`- Normalized URL: ${normalizedUrl}`);
@@ -854,6 +889,7 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
         .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
 
     const coordinatorHost = await resolveCoordinatorHost(deviceHost);
+    assertStillLatest();
     if (coordinatorHost !== deviceHost) {
         log(`- Coordinator resolved: ${deviceHost} -> ${coordinatorHost}`);
     }
@@ -863,6 +899,7 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     } catch (err) {
         log(`[WARN] Preflight stop failed: ${err.message}`);
     }
+    assertStillLatest();
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
     const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
     const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
@@ -885,6 +922,7 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
         const shortErr = String(err?.message || err).split('\n')[0];
         log(`[WARN] Metadata probe failed: ${shortErr}`);
     }
+    assertStillLatest();
 
     currentTitle = title;
     currentDurationSec = durationSec;
@@ -920,14 +958,17 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
 
     let lastError;
     for (const option of candidates) {
+        assertStillLatest();
         try {
             log(`- Trying AVTransport: ${option.label}`);
             await withRetry(
                 () => device.setAVTransportURI({ uri: option.uri, metadata: option.metadata, onlySetUri: true }),
                 { label: `Set AVTransport (${option.label})`, attempts: 3, baseDelay: 400 }
             );
+            assertStillLatest();
             log(`- Starting playback...`);
             await withRetry(() => device.play(), { label: 'Play', attempts: 3, baseDelay: 400 });
+            assertStillLatest();
             log(`[SUCCESS] Device accepted: ${option.label}`);
             lastPlayback = {
                 deviceHost: coordinatorHost,
@@ -942,6 +983,9 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
             }
             return { title, art };
         } catch (err) {
+            if (isPlaybackSupersededError(err)) {
+                throw err;
+            }
             lastError = err;
             log(`- Failed: ${option.label} -> ${err.message}`);
         }
@@ -958,6 +1002,11 @@ app.post('/play', async (req, res) => {
         const { title } = await startPlayback(deviceHost, youtubeUrl);
         res.send({ status: 'playing', title });
     } catch (e) {
+        if (isPlaybackSupersededError(e)) {
+            log(`[WARN] Play superseded: ${e.message}`);
+            res.status(409).send(e.message);
+            return;
+        }
         log(`[FATAL] Play Error: ${e.message}`);
         res.status(500).send(e.message);
     }
@@ -984,6 +1033,7 @@ app.post('/pause', async (req, res) => {
         return;
     }
     try {
+        playbackStartToken += 1;
         const host = await resolveCoordinatorHost(deviceHost);
         const device = new Sonos(host);
         await withRetry(() => device.pause(), { label: 'Pause', attempts: 2, baseDelay: 300 });
@@ -1004,6 +1054,7 @@ app.post('/stop', async (req, res) => {
         return;
     }
     try {
+        playbackStartToken += 1;
         const host = await resolveCoordinatorHost(deviceHost);
         const device = new Sonos(host);
         await withRetry(() => device.stop(), { label: 'Stop', attempts: 2, baseDelay: 300 });
