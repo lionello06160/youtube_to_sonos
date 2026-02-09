@@ -865,6 +865,7 @@ app.post('/group', async (req, res) => {
 
 const startPlayback = async (deviceHost, youtubeUrl) => {
     const startToken = ++playbackStartToken;
+    const playbackStartedAt = Date.now();
     const assertStillLatest = () => {
         if (startToken !== playbackStartToken) {
             throw createPlaybackSupersededError();
@@ -885,7 +886,15 @@ const startPlayback = async (deviceHost, youtubeUrl) => {
     currentDirectUrlPromiseFor = '';
     const prefetchStartedAt = Date.now();
     void resolveDirectUrl(normalizedUrl)
-        .then(() => log(`- Direct URL prefetched (${Date.now() - prefetchStartedAt}ms)`))
+        .then(() => {
+            const elapsedMs = Date.now() - prefetchStartedAt;
+            if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
+            log(`- Direct URL prefetched (${elapsedMs}ms)`);
+            if (activeStreamCount === 0 && lastPlayback?.deviceHost && lastPlayback.startedAt >= playbackStartedAt) {
+                log('- Direct URL ready while idle, scheduling restart');
+                scheduleRestart('direct URL ready');
+            }
+        })
         .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
 
     const coordinatorHost = await resolveCoordinatorHost(deviceHost);
@@ -1098,6 +1107,7 @@ app.get('/sonons.mp3', async (req, res) => {
     }
 
     activeStreamCount += 1;
+    const streamToken = playbackStartToken;
     let closed = false;
     let endedNaturally = false;
     const markClosed = () => {
@@ -1186,10 +1196,11 @@ app.get('/sonons.mp3', async (req, res) => {
         : [
             '-hide_banner',
             '-loglevel', 'error',
-            '-fflags', '+nobuffer',
-            '-analyzeduration', '0',
-            '-probesize', '32k',
-            '-thread_queue_size', '1024',
+            '-thread_queue_size', '4096',
+            '-analyzeduration', '10M',
+            '-probesize', '5M',
+            '-fflags', '+discardcorrupt',
+            '-err_detect', 'ignore_err',
             '-i', 'pipe:0',
             '-vn', '-sn', '-dn',
             '-acodec', 'libmp3lame',
@@ -1210,7 +1221,7 @@ app.get('/sonons.mp3', async (req, res) => {
         ytArgs.push(
             '--extractor-args', YT_EXTRACTOR_ARGS,
             '--user-agent', YT_USER_AGENT,
-            '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best/18/best',
+            '-f', '140/251/250/249/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/18/best',
             '-o', '-',
             currentYoutubeUrl
         );
@@ -1246,6 +1257,12 @@ app.get('/sonons.mp3', async (req, res) => {
         markClosed();
         if (yt && !yt.killed) yt.kill();
         if (!ff.killed) ff.kill();
+        setTimeout(() => {
+            if (streamToken !== playbackStartToken) return;
+            if (endedNaturally) return;
+            if (activeStreamCount > 0) return;
+            scheduleRestart('client closed');
+        }, 300);
     });
 
     res.on('error', (e) => {
