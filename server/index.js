@@ -20,6 +20,7 @@ const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_clien
 const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() !== 'false';
 const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 12000);
+const YT_DIRECT_URL_WAIT_MS = Number(process.env.YT_DIRECT_URL_WAIT_MS || 15000);
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -1083,7 +1084,31 @@ app.get('/sonons.mp3', async (req, res) => {
         directUrl = currentDirectUrl;
         log('- Stream source: direct URL cache');
     } else {
-        log('- Stream source: yt-dlp pipe');
+        const waitMs = Math.max(0, YT_DIRECT_URL_WAIT_MS);
+        if (waitMs > 0) {
+            const startedAt = Date.now();
+            const pendingDirectUrl = resolveDirectUrl(currentYoutubeUrl);
+            pendingDirectUrl.catch(() => {});
+            try {
+                directUrl = await Promise.race([
+                    pendingDirectUrl,
+                    new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error('direct-url-timeout')), waitMs);
+                    })
+                ]);
+                log(`- Stream source: direct URL wait-hit (${Date.now() - startedAt}ms)`);
+            } catch (err) {
+                const msg = String(err?.message || err);
+                if (msg.includes('direct-url-timeout')) {
+                    log(`- Stream source: yt-dlp pipe (direct URL wait timeout ${waitMs}ms)`);
+                } else {
+                    log(`[WARN] Direct URL wait failed: ${msg}`);
+                    log('- Stream source: yt-dlp pipe');
+                }
+            }
+        } else {
+            log('- Stream source: yt-dlp pipe');
+        }
     }
 
     const ffArgs = directUrl
