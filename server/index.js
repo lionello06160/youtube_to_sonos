@@ -20,6 +20,7 @@ const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_clien
 const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() !== 'false';
 const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 5000);
+const YT_METADATA_RETRY_TIMEOUT_MS = Number(process.env.YT_METADATA_RETRY_TIMEOUT_MS || 15000);
 const YT_DIRECT_URL_WAIT_MS = Math.min(3000, Math.max(0, Number(process.env.YT_DIRECT_URL_WAIT_MS || 1200)));
 
 // STORE STATE LOCALLY
@@ -960,18 +961,32 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     let art = '';
     let durationSec = fallbackDurationSec;
     let durationLabel = fallbackDurationLabel || (durationSec != null ? formatDuration(durationSec) : null);
-    try {
+    let metadataProbeFailed = false;
+    const probeMetadata = async (timeoutMs) => {
         const { stdout } = await execPromise(
             `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
-            { maxBuffer: 1024 * 1024, timeout: YT_METADATA_TIMEOUT_MS }
+            { maxBuffer: 1024 * 1024, timeout: timeoutMs }
         );
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        title = lines[0] || title;
-        art = lines[1] || art;
         const parsedDuration = Number(lines[2]);
-        durationSec = Number.isFinite(parsedDuration) ? parsedDuration : null;
-        durationLabel = lines[3] || durationLabel;
+        const parsedDurationSec = Number.isFinite(parsedDuration)
+            ? parsedDuration
+            : parseDurationToSeconds(lines[3] || '');
+        return {
+            title: lines[0] || '',
+            art: lines[1] || '',
+            durationSec: Number.isFinite(parsedDurationSec) ? parsedDurationSec : null,
+            durationLabel: lines[3] || null
+        };
+    };
+    try {
+        const metadata = await probeMetadata(YT_METADATA_TIMEOUT_MS);
+        title = metadata.title || title;
+        art = metadata.art || art;
+        durationSec = metadata.durationSec != null ? metadata.durationSec : durationSec;
+        durationLabel = metadata.durationLabel || durationLabel;
     } catch (err) {
+        metadataProbeFailed = true;
         const shortErr = String(err?.message || err).split('\n')[0];
         log(`[WARN] Metadata probe failed: ${shortErr}`);
     }
@@ -980,6 +995,31 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     currentTitle = title;
     currentDurationSec = durationSec;
     currentDurationLabel = durationLabel;
+    if (metadataProbeFailed && (!fallbackTitle || durationSec == null)) {
+        void (async () => {
+            try {
+                const delayedMeta = await probeMetadata(YT_METADATA_RETRY_TIMEOUT_MS);
+                if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
+                const nextTitle = delayedMeta.title || currentTitle || 'Sonons Audio';
+                const nextDurationSec = delayedMeta.durationSec != null ? delayedMeta.durationSec : currentDurationSec;
+                const nextDurationLabel = delayedMeta.durationLabel || (nextDurationSec != null ? formatDuration(nextDurationSec) : currentDurationLabel);
+                const changed =
+                    nextTitle !== currentTitle
+                    || nextDurationSec !== currentDurationSec
+                    || nextDurationLabel !== currentDurationLabel;
+                currentTitle = nextTitle;
+                if (delayedMeta.art) art = delayedMeta.art;
+                currentDurationSec = nextDurationSec;
+                currentDurationLabel = nextDurationLabel;
+                if (changed) {
+                    log('- Metadata refreshed after delayed probe');
+                }
+            } catch (retryErr) {
+                const shortRetryErr = String(retryErr?.message || retryErr).split('\n')[0];
+                log(`[WARN] Metadata retry failed: ${shortRetryErr}`);
+            }
+        })();
+    }
     const normalizedTitle = truncate(normalizeTitle(title), 120);
     const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
     const safeTitle = escapeXml(normalizedTitle);
@@ -1134,7 +1174,7 @@ app.get('/status', (req, res) => {
         autoStopTime: getEffectiveStopTime(),
         autoShutdownTime: autoConfig.autoShutdownTime || null,
         playlistCount: playlistItems.length,
-        playlistIndex: playlistCurrentIndex,
+        playlistIndex: playlistMode ? playlistCurrentIndex : null,
         playlistMode,
         loopMode
     });

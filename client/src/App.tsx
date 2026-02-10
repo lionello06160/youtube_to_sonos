@@ -94,6 +94,7 @@ function App() {
     startedAt: number | null;
     durationSec: number | null;
     durationLabel: string | null;
+    playlistMode?: boolean;
     autoStopTime?: string | null;
     autoShutdownTime?: string | null;
   } | null>(null);
@@ -218,7 +219,8 @@ function App() {
         const res = await axios.get(`${API_URL}/status`);
         if (!mounted) return;
         setNowPlaying(res.data);
-        if (typeof res.data.playlistIndex === 'number') {
+        const isPlaylistMode = Boolean(res.data.playlistMode);
+        if (isPlaylistMode && typeof res.data.playlistIndex === 'number') {
           setPlaylistIndex(res.data.playlistIndex);
         } else {
           setPlaylistIndex(null);
@@ -288,6 +290,8 @@ function App() {
           deviceHost: selectedHosts[0],
           youtubeUrl
         });
+        setPlaylistIndex(null);
+        setNowPlaying((prev) => (prev ? { ...prev, playlistMode: false } : prev));
         showToast('Broadcast started');
       } catch (err: any) {
         showToast('Playback failed');
@@ -653,7 +657,7 @@ function App() {
               ) : (
                 <div className="space-y-3">
                   {playlistItems.map((track, index) => {
-                    const isCurrent = playlistIndex === index && nowPlaying?.isPlaying;
+                    const isCurrent = playlistIndex === index && nowPlaying?.isPlaying && nowPlaying?.playlistMode;
                     const playKey = `play-${track.uid}`;
                     const deleteKey = `delete-${track.uid}`;
                     const isPlayBusy = (uiAction.kind === 'playlistStart' && uiAction.trackIndex === index) || buttonBusyKey === playKey;
