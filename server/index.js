@@ -408,7 +408,12 @@ const resolveDirectUrl = async (youtubeUrl) => {
     const normalizedUrl = normalizeYoutubeUrl(youtubeUrl);
     const now = Date.now();
     if (currentDirectUrlFor === normalizedUrl && currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
-        return currentDirectUrl;
+        return {
+            url: currentDirectUrl,
+            title: '',
+            durationSec: null,
+            durationLabel: null
+        };
     }
     if (currentDirectUrlPromise && currentDirectUrlPromiseFor === normalizedUrl) {
         return currentDirectUrlPromise;
@@ -419,18 +424,33 @@ const resolveDirectUrl = async (youtubeUrl) => {
     currentDirectUrlPromiseFor = normalizedUrl;
     currentDirectUrlPromise = (async () => {
         const { stdout } = await execPromise(
-            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${normalizedUrl}"`,
+            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(duration)s" --print "%(duration_string)s" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${normalizedUrl}"`,
             { maxBuffer: 1024 * 1024 }
         );
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        if (!lines.length) {
+        const urlLine = lines.find((line) => /^https?:\/\//i.test(line));
+        if (!urlLine) {
             throw new Error('yt-dlp returned empty direct URL');
         }
-        const resolvedUrl = lines[0];
+        const metaLines = lines.filter((line) => !/^https?:\/\//i.test(line));
+        const directTitle = metaLines[0] || '';
+        const parsedDuration = Number(metaLines[1]);
+        const directDurationSec = Number.isFinite(parsedDuration)
+            ? parsedDuration
+            : parseDurationToSeconds(metaLines[2] || '');
+        const directDurationLabel =
+            metaLines[2]
+            || (Number.isFinite(directDurationSec) ? formatDuration(directDurationSec) : null);
+        const resolvedUrl = urlLine;
         currentDirectUrl = resolvedUrl;
         currentDirectUrlAt = Date.now();
         currentDirectUrlFor = normalizedUrl;
-        return resolvedUrl;
+        return {
+            url: resolvedUrl,
+            title: directTitle,
+            durationSec: Number.isFinite(directDurationSec) ? directDurationSec : null,
+            durationLabel: directDurationLabel
+        };
     })();
     try {
         return await currentDirectUrlPromise;
@@ -981,13 +1001,21 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     currentDirectUrlPromiseFor = '';
     const prefetchStartedAt = Date.now();
     void resolveDirectUrl(normalizedUrl)
-        .then((resolvedDirectUrl) => {
+        .then((directInfo) => {
+            const resolvedDirectUrl = directInfo?.url || '';
             const elapsedMs = Date.now() - prefetchStartedAt;
             if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
-            const inferredDuration = parseDurationFromDirectUrl(resolvedDirectUrl);
+            const inferredTitle = String(directInfo?.title || '').trim();
+            if (inferredTitle && (currentTitle === 'Sonons Audio' || currentTitle === 'Sonons Stream' || !currentTitle)) {
+                currentTitle = inferredTitle;
+                log('- Title inferred from direct URL lookup');
+            }
+            const inferredDuration =
+                (Number.isFinite(directInfo?.durationSec) ? directInfo.durationSec : null)
+                || parseDurationFromDirectUrl(resolvedDirectUrl);
             if (inferredDuration && (currentDurationSec == null || !Number.isFinite(currentDurationSec) || currentDurationSec <= 0)) {
                 currentDurationSec = inferredDuration;
-                currentDurationLabel = formatDuration(inferredDuration);
+                currentDurationLabel = directInfo?.durationLabel || formatDuration(inferredDuration);
                 log(`- Duration inferred from direct URL (${inferredDuration}s)`);
             }
             log(`- Direct URL prefetched (${elapsedMs}ms)`);
@@ -1314,11 +1342,11 @@ app.get('/sonons.mp3', async (req, res) => {
         const waitMs = Math.max(0, YT_DIRECT_URL_WAIT_MS);
         if (waitMs > 0) {
             const startedAt = Date.now();
-            const pendingDirectUrl = resolveDirectUrl(currentYoutubeUrl);
-            pendingDirectUrl.catch(() => {});
+            const pendingDirectInfo = resolveDirectUrl(currentYoutubeUrl);
+            pendingDirectInfo.catch(() => {});
             try {
                 directUrl = await Promise.race([
-                    pendingDirectUrl,
+                    pendingDirectInfo.then((info) => info.url),
                     new Promise((_, reject) => {
                         setTimeout(() => reject(new Error('direct-url-timeout')), waitMs);
                     })
