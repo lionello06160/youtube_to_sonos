@@ -78,6 +78,23 @@ function formatTime(seconds: number) {
   return `${mm}:${String(secs).padStart(2, '0')}`;
 }
 
+function extractYoutubeId(input: string | null | undefined) {
+  const value = String(input || '').trim();
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.hostname.includes('youtu.be')) {
+      return url.pathname.replace(/^\/+/, '').split('/')[0] || null;
+    }
+    if (url.pathname.startsWith('/shorts/')) {
+      return url.pathname.split('/')[2] || null;
+    }
+    return url.searchParams.get('v');
+  } catch {
+    return null;
+  }
+}
+
 function App() {
   const YT_STORAGE_KEY = 'sonons:lastYoutubeUrl';
   const [devices, setDevices] = useState<Device[]>([]);
@@ -89,6 +106,7 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [nowPlaying, setNowPlaying] = useState<{
     title: string | null;
+    youtubeUrl?: string | null;
     isPlaying: boolean;
     activeStreams: number;
     startedAt: number | null;
@@ -430,13 +448,27 @@ function App() {
     { label: 'Playback', value: nowPlaying?.isPlaying ? 'LIVE' : 'IDLE', note: nowPlaying?.isPlaying ? 'Broadcast' : 'Standby' },
   ]), [onlineCount, selectedHosts.length, nowPlaying?.isPlaying]);
 
+  const nowPlayingDisplayTitle = useMemo(() => {
+    const rawTitle = String(nowPlaying?.title || '').trim();
+    if (rawTitle && rawTitle.toLowerCase() !== 'sonons audio' && rawTitle.toLowerCase() !== 'sonons stream') {
+      return rawTitle;
+    }
+    const videoId = extractYoutubeId(nowPlaying?.youtubeUrl || youtubeUrl);
+    if (videoId) return `YouTube · ${videoId}`;
+    return rawTitle || null;
+  }, [nowPlaying?.title, nowPlaying?.youtubeUrl, youtubeUrl]);
+
   const progress = useMemo(() => {
-    if (!nowPlaying?.startedAt || !nowPlaying?.durationSec) return null;
+    if (!nowPlaying?.startedAt) return null;
     const elapsed = Math.max(0, Math.floor((Date.now() - nowPlaying.startedAt) / 1000));
-    const percent = Math.min(100, (elapsed / nowPlaying.durationSec) * 100);
+    const duration =
+      typeof nowPlaying.durationSec === 'number' && Number.isFinite(nowPlaying.durationSec) && nowPlaying.durationSec > 0
+        ? nowPlaying.durationSec
+        : null;
+    const percent = duration ? Math.min(100, (elapsed / duration) * 100) : null;
     return {
       elapsed,
-      duration: nowPlaying.durationSec,
+      duration,
       percent
     };
   }, [nowPlaying?.startedAt, nowPlaying?.durationSec, tick]);
@@ -738,21 +770,25 @@ function App() {
                 <div className="flex items-center gap-2 mt-2 text-xs text-white/60 max-w-[320px]">
                   <span className={`size-2 rounded-full ${nowPlaying?.isPlaying ? 'bg-emerald-500 animate-pulse' : 'bg-white/20'}`}></span>
                   <span className="truncate">
-                    {nowPlaying?.title ? `Now: ${nowPlaying.title}` : 'Idle'}
+                    {nowPlayingDisplayTitle ? `Now: ${nowPlayingDisplayTitle}` : 'Idle'}
                   </span>
                 </div>
                 <div className="mt-2 w-full">
                   <div className="progress-track">
                     <div
-                      className={`progress-bar ${progress ? '' : 'is-indeterminate'}`}
-                      style={progress ? { width: `${progress.percent}%` } : undefined}
+                      className={`progress-bar ${progress?.percent == null ? 'is-indeterminate' : ''}`}
+                      style={progress?.percent != null ? { width: `${progress.percent}%` } : undefined}
                     />
                   </div>
                   <div className="mt-1 flex justify-between text-[10px] text-white/50 font-mono">
                     {progress ? (
                       <>
                         <span>{formatTime(progress.elapsed)}</span>
-                        <span>{nowPlaying?.durationLabel || formatTime(progress.duration)}</span>
+                        <span>
+                          {progress.duration != null
+                            ? (nowPlaying?.durationLabel || formatTime(progress.duration))
+                            : (nowPlaying?.durationLabel || '--:--')}
+                        </span>
                       </>
                     ) : (
                       <span className="text-white/30">--:--</span>
