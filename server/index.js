@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const util = require('util');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const execPromise = util.promisify(exec);
 
 const app = express();
@@ -22,6 +23,7 @@ const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() 
 const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 5000);
 const YT_METADATA_RETRY_TIMEOUT_MS = Number(process.env.YT_METADATA_RETRY_TIMEOUT_MS || 15000);
 const YT_DIRECT_URL_WAIT_MS = Math.min(3000, Math.max(0, Number(process.env.YT_DIRECT_URL_WAIT_MS || 1200)));
+const YT_OEMBED_TIMEOUT_MS = Number(process.env.YT_OEMBED_TIMEOUT_MS || 10000);
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -94,6 +96,57 @@ const formatDuration = (seconds) => {
         return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
     }
     return `${mins}:${String(secs).padStart(2, '0')}`;
+};
+
+const fetchJson = (url, timeoutMs = 10000) =>
+    new Promise((resolve, reject) => {
+        const req = https.get(
+            url,
+            { headers: { 'User-Agent': YT_USER_AGENT } },
+            (res) => {
+                let data = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    if (res.statusCode && res.statusCode >= 400) {
+                        reject(new Error(`HTTP ${res.statusCode}`));
+                        return;
+                    }
+                    try {
+                        resolve(JSON.parse(data));
+                    } catch (err) {
+                        reject(new Error(`Invalid JSON: ${err.message}`));
+                    }
+                });
+            }
+        );
+        req.on('error', reject);
+        req.setTimeout(timeoutMs, () => {
+            req.destroy(new Error('request timeout'));
+        });
+    });
+
+const fetchTitleFromOEmbed = async (youtubeUrl) => {
+    const endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(youtubeUrl)}&format=json`;
+    const payload = await fetchJson(endpoint, YT_OEMBED_TIMEOUT_MS);
+    if (!payload || typeof payload.title !== 'string') return null;
+    const title = payload.title.trim();
+    return title || null;
+};
+
+const parseDurationFromDirectUrl = (directUrl) => {
+    if (!directUrl) return null;
+    try {
+        const parsed = new URL(directUrl);
+        const durRaw = parsed.searchParams.get('dur') || '';
+        const dur = Number.parseFloat(durRaw);
+        if (!Number.isFinite(dur) || dur <= 0) return null;
+        return Math.floor(dur);
+    } catch {
+        return null;
+    }
 };
 const parseDurationToSeconds = (value = '') => {
     const text = String(value || '').trim();
@@ -928,9 +981,15 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     currentDirectUrlPromiseFor = '';
     const prefetchStartedAt = Date.now();
     void resolveDirectUrl(normalizedUrl)
-        .then(() => {
+        .then((resolvedDirectUrl) => {
             const elapsedMs = Date.now() - prefetchStartedAt;
             if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
+            const inferredDuration = parseDurationFromDirectUrl(resolvedDirectUrl);
+            if (inferredDuration && (currentDurationSec == null || !Number.isFinite(currentDurationSec) || currentDurationSec <= 0)) {
+                currentDurationSec = inferredDuration;
+                currentDurationLabel = formatDuration(inferredDuration);
+                log(`- Duration inferred from direct URL (${inferredDuration}s)`);
+            }
             log(`- Direct URL prefetched (${elapsedMs}ms)`);
             if (activeStreamCount === 0 && lastPlayback?.deviceHost && lastPlayback.startedAt >= playbackStartedAt) {
                 log('- Direct URL ready while idle, forcing restart');
@@ -995,6 +1054,22 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     currentTitle = title;
     currentDurationSec = durationSec;
     currentDurationLabel = durationLabel;
+    if (metadataProbeFailed && (!fallbackTitle || !currentTitle || currentTitle === 'Sonons Audio' || currentTitle === 'Sonons Stream')) {
+        void (async () => {
+            try {
+                const oembedTitle = await fetchTitleFromOEmbed(normalizedUrl);
+                if (!oembedTitle) return;
+                if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
+                if (currentTitle === 'Sonons Audio' || currentTitle === 'Sonons Stream' || !currentTitle) {
+                    currentTitle = oembedTitle;
+                    log('- Metadata title refreshed via oEmbed');
+                }
+            } catch (oembedErr) {
+                const shortOembedErr = String(oembedErr?.message || oembedErr).split('\n')[0];
+                log(`[WARN] oEmbed title fetch failed: ${shortOembedErr}`);
+            }
+        })();
+    }
     if (metadataProbeFailed && (!fallbackTitle || durationSec == null)) {
         void (async () => {
             try {
