@@ -15,15 +15,19 @@ const HOST_IP = '10.10.4.14';
 const VERSION = '8.0 (Clean URI)';
 const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
 const DEFAULT_LOOP_MODE = 'all';
-const YT_COOKIES = process.env.YT_COOKIES || '';
-const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || '';
-const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_client=android';
-const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const YT_COOKIES_FILE = path.join(__dirname, 'yt-cookies.txt');
+const YT_COOKIES = process.env.YT_COOKIES || (fs.existsSync(YT_COOKIES_FILE) ? YT_COOKIES_FILE : '');
+const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || 'node';
+const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_client=mweb,web,tvhtml5';
+const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
 const YT_FORCE_IPV4 = String(process.env.YT_FORCE_IPV4 || 'true').toLowerCase() !== 'false';
 const YT_METADATA_TIMEOUT_MS = Number(process.env.YT_METADATA_TIMEOUT_MS || 5000);
 const YT_METADATA_RETRY_TIMEOUT_MS = Number(process.env.YT_METADATA_RETRY_TIMEOUT_MS || 15000);
-const YT_DIRECT_URL_WAIT_MS = Math.min(3000, Math.max(0, Number(process.env.YT_DIRECT_URL_WAIT_MS || 1200)));
+const YT_DIRECT_URL_WAIT_MS = Math.min(5000, Math.max(0, Number(process.env.YT_DIRECT_URL_WAIT_MS || 2500)));
+const YT_DIRECT_URL_RESOLVE_TIMEOUT_MS = Number(process.env.YT_DIRECT_URL_RESOLVE_TIMEOUT_MS || 60000);
 const YT_OEMBED_TIMEOUT_MS = Number(process.env.YT_OEMBED_TIMEOUT_MS || 10000);
+const YT_WATCH_TITLE_TIMEOUT_MS = Number(process.env.YT_WATCH_TITLE_TIMEOUT_MS || 8000);
+const YT_TITLE_FALLBACK_TIMEOUT_MS = Number(process.env.YT_TITLE_FALLBACK_TIMEOUT_MS || 20000);
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -128,12 +132,55 @@ const fetchJson = (url, timeoutMs = 10000) =>
         });
     });
 
+const fetchText = (url, timeoutMs = 10000) =>
+    new Promise((resolve, reject) => {
+        const req = https.get(
+            url,
+            { headers: { 'User-Agent': YT_USER_AGENT } },
+            (res) => {
+                let data = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk) => {
+                    data += chunk;
+                });
+                res.on('end', () => {
+                    if (res.statusCode && res.statusCode >= 400) {
+                        reject(new Error(`HTTP ${res.statusCode}`));
+                        return;
+                    }
+                    resolve(data);
+                });
+            }
+        );
+        req.on('error', reject);
+        req.setTimeout(timeoutMs, () => {
+            req.destroy(new Error('request timeout'));
+        });
+    });
+
+const decodeHtmlEntities = (value = '') =>
+    String(value)
+        .replace(/&amp;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, '\'')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+
+const sanitizeFetchedTitle = (value = '') => {
+    const normalized = decodeHtmlEntities(String(value || ''))
+        .replace(/\s+/g, ' ')
+        .replace(/\s*-\s*YouTube\s*$/i, '')
+        .trim();
+    if (!normalized) return null;
+    if (/^sonons (audio|stream)$/i.test(normalized)) return null;
+    return normalized;
+};
+
 const fetchTitleFromOEmbed = async (youtubeUrl) => {
     const endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(youtubeUrl)}&format=json`;
     const payload = await fetchJson(endpoint, YT_OEMBED_TIMEOUT_MS);
     if (!payload || typeof payload.title !== 'string') return null;
-    const title = payload.title.trim();
-    return title || null;
+    return sanitizeFetchedTitle(payload.title);
 };
 
 const parseDurationFromDirectUrl = (directUrl) => {
@@ -147,6 +194,62 @@ const parseDurationFromDirectUrl = (directUrl) => {
     } catch {
         return null;
     }
+};
+
+const fetchTitleFromWatchPage = async (youtubeUrl) => {
+    const html = await fetchText(youtubeUrl, YT_WATCH_TITLE_TIMEOUT_MS);
+    const ogTitleMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+    if (ogTitleMatch?.[1]) {
+        return sanitizeFetchedTitle(ogTitleMatch[1]);
+    }
+    const metaTitleMatch = html.match(/<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["']/i);
+    if (metaTitleMatch?.[1]) {
+        return sanitizeFetchedTitle(metaTitleMatch[1]);
+    }
+    const titleTagMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleTagMatch?.[1]) {
+        return sanitizeFetchedTitle(titleTagMatch[1]);
+    }
+    return null;
+};
+
+const fetchTitleViaYtDlp = async (youtubeUrl, timeoutMs = YT_TITLE_FALLBACK_TIMEOUT_MS) => {
+    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
+    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
+    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
+    const { stdout } = await execPromise(
+        `yt-dlp --no-config --no-warnings --no-playlist --skip-download${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" "${youtubeUrl}"`,
+        { maxBuffer: 1024 * 256, timeout: timeoutMs }
+    );
+    const firstLine = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    return sanitizeFetchedTitle(firstLine || '');
+};
+
+const resolveTitleFallback = async (youtubeUrl) => {
+    const attempts = [
+        { label: 'oEmbed', fn: () => fetchTitleFromOEmbed(youtubeUrl) },
+        { label: 'watch page', fn: () => fetchTitleFromWatchPage(youtubeUrl) },
+        { label: 'yt-dlp title', fn: () => fetchTitleViaYtDlp(youtubeUrl) }
+    ];
+    for (const attempt of attempts) {
+        try {
+            const title = await attempt.fn();
+            if (title) {
+                return { title, source: attempt.label };
+            }
+        } catch (err) {
+            const shortErr = String(err?.message || err).split('\n')[0];
+            log(`[WARN] ${attempt.label} title fetch failed: ${shortErr}`);
+        }
+    }
+    return null;
+};
+
+const isGenericPlaybackTitle = (value = '') => {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized) return true;
+    if (normalized === 'sonons audio' || normalized === 'sonons stream') return true;
+    return /^youtube[:\s.-]*[a-z0-9_-]{6,}$/i.test(normalized);
 };
 const parseDurationToSeconds = (value = '') => {
     const text = String(value || '').trim();
@@ -408,47 +511,40 @@ const resolveDirectUrl = async (youtubeUrl) => {
     const normalizedUrl = normalizeYoutubeUrl(youtubeUrl);
     const now = Date.now();
     if (currentDirectUrlFor === normalizedUrl && currentDirectUrl && now - currentDirectUrlAt < DIRECT_URL_TTL_MS) {
+        const cachedDurationSec = parseDurationFromDirectUrl(currentDirectUrl);
         return {
             url: currentDirectUrl,
             title: '',
-            durationSec: null,
-            durationLabel: null
+            durationSec: cachedDurationSec,
+            durationLabel: cachedDurationSec != null ? formatDuration(cachedDurationSec) : null
         };
     }
     if (currentDirectUrlPromise && currentDirectUrlPromiseFor === normalizedUrl) {
         return currentDirectUrlPromise;
     }
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
-    const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
+    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
     const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     currentDirectUrlPromiseFor = normalizedUrl;
     currentDirectUrlPromise = (async () => {
         const { stdout } = await execPromise(
-            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(duration)s" --print "%(duration_string)s" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${normalizedUrl}"`,
-            { maxBuffer: 1024 * 1024 }
+            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag} --js-runtimes "${YT_JS_RUNTIME}"${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${normalizedUrl}"`,
+            { maxBuffer: 1024 * 1024, timeout: YT_DIRECT_URL_RESOLVE_TIMEOUT_MS }
         );
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        const urlLine = lines.find((line) => /^https?:\/\//i.test(line));
-        if (!urlLine) {
+        const resolvedUrl = lines.find((line) => /^https?:\/\//i.test(line));
+        if (!resolvedUrl) {
             throw new Error('yt-dlp returned empty direct URL');
         }
-        const metaLines = lines.filter((line) => !/^https?:\/\//i.test(line));
-        const directTitle = metaLines[0] || '';
-        const parsedDuration = Number(metaLines[1]);
-        const directDurationSec = Number.isFinite(parsedDuration)
-            ? parsedDuration
-            : parseDurationToSeconds(metaLines[2] || '');
-        const directDurationLabel =
-            metaLines[2]
-            || (Number.isFinite(directDurationSec) ? formatDuration(directDurationSec) : null);
-        const resolvedUrl = urlLine;
+        const directDurationSec = parseDurationFromDirectUrl(resolvedUrl);
+        const directDurationLabel = directDurationSec != null ? formatDuration(directDurationSec) : null;
         currentDirectUrl = resolvedUrl;
         currentDirectUrlAt = Date.now();
         currentDirectUrlFor = normalizedUrl;
         return {
             url: resolvedUrl,
-            title: directTitle,
-            durationSec: Number.isFinite(directDurationSec) ? directDurationSec : null,
+            title: '',
+            durationSec: directDurationSec,
             durationLabel: directDurationLabel
         };
     })();
@@ -463,13 +559,15 @@ const resolveDirectUrl = async (youtubeUrl) => {
 };
 
 const buildTrackFromEntry = (entry = {}) => {
-    const rawId = entry.id || entry.url || '';
-    const id = String(rawId).trim();
+    const directUrlCandidate = [entry.webpage_url, entry.url, entry.original_url]
+        .find((value) => typeof value === 'string' && /^https?:/i.test(value));
+    const rawId = entry.id || entry.url || entry.webpage_url || entry.original_url || '';
+    let id = String(rawId).trim();
+    if (/^https?:/i.test(id)) {
+        id = extractVideoIdFromYoutubeUrl(id) || id;
+    }
     if (!id) return null;
-    const url =
-        typeof entry.url === 'string' && /^https?:/i.test(entry.url)
-            ? entry.url
-            : `https://www.youtube.com/watch?v=${id}`;
+    const url = directUrlCandidate || `https://www.youtube.com/watch?v=${id}`;
     const rawDurationSec = Number.isFinite(entry.duration)
         ? Number(entry.duration)
         : parseDurationToSeconds(entry.duration_string || '');
@@ -486,13 +584,21 @@ const buildTrackFromEntry = (entry = {}) => {
 };
 
 const resolvePlaylistTracks = async (inputUrl) => {
+    const normalizedUrl = normalizeYoutubeUrl(inputUrl);
+    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
+    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
+    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     const { stdout } = await execPromise(
-        `yt-dlp --no-warnings --flat-playlist --dump-single-json "${inputUrl}"`,
-        { maxBuffer: 1024 * 1024 * 2 }
+        `yt-dlp --no-config --no-warnings --flat-playlist${cookieFlag} --js-runtimes "${YT_JS_RUNTIME}"${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --dump-single-json "${normalizedUrl}"`,
+        { maxBuffer: 1024 * 1024 * 2, timeout: 30000 }
     );
     const payload = JSON.parse(stdout);
     const entries = Array.isArray(payload?.entries) ? payload.entries : [payload];
-    return entries.map(buildTrackFromEntry).filter(Boolean);
+    const tracks = entries.map(buildTrackFromEntry).filter(Boolean);
+    if (!tracks.length) {
+        throw new Error('No playable tracks found in the provided URL');
+    }
+    return tracks;
 };
 
 const resetShuffleOrder = (startUid) => {
@@ -638,24 +744,29 @@ const truncate = (value, max = 120) => {
     return value.slice(0, max - 3) + '...';
 };
 
+const extractVideoIdFromYoutubeUrl = (input = '') => {
+    const value = String(input || '').trim();
+    if (!value) return '';
+    try {
+        const url = new URL(value);
+        if (url.hostname.includes('youtu.be')) {
+            return url.pathname.replace(/^\/+/, '').split('/')[0] || '';
+        }
+        if (url.pathname.startsWith('/shorts/')) {
+            return url.pathname.split('/')[2] || '';
+        }
+        return url.searchParams.get('v') || '';
+    } catch (err) {
+        return '';
+    }
+};
+
 const normalizeYoutubeUrl = (input = '') => {
     const value = String(input || '').trim();
     if (!value) return value;
-    try {
-        const url = new URL(value);
-        let id = '';
-        if (url.hostname.includes('youtu.be')) {
-            id = url.pathname.replace(/^\/+/, '').split('/')[0] || '';
-        } else if (url.pathname.startsWith('/shorts/')) {
-            id = url.pathname.split('/')[2] || '';
-        } else {
-            id = url.searchParams.get('v') || '';
-        }
-        if (id) {
-            return `https://www.youtube.com/watch?v=${id}`;
-        }
-    } catch (err) {
-        // fallthrough
+    const id = extractVideoIdFromYoutubeUrl(value);
+    if (id) {
+        return `https://www.youtube.com/watch?v=${id}`;
     }
     return value;
 };
@@ -710,31 +821,53 @@ app.get('/scan', async (req, res) => {
     const net = require('net');
     const foundHosts = [];
     const scanPromises = [];
+    const TIMEOUT = 200; // Increased timeout for reliability
+
+    log(`Starting network scan on 10.10.4-7.x (timeout ${TIMEOUT}ms)...`);
+
     for (const b of [4, 5, 6, 7]) {
         for (let i = 1; i <= 254; i++) {
             const host = `10.10.${b}.${i}`;
             scanPromises.push(new Promise((resolve) => {
                 const socket = new net.Socket();
-                socket.setTimeout(80);
-                socket.on('connect', () => { foundHosts.push(host); socket.destroy(); resolve(); });
+                socket.setTimeout(TIMEOUT);
+                socket.on('connect', () => {
+                    foundHosts.push(host);
+                    log(`- Scan found potential Sonos at ${host}`);
+                    socket.destroy();
+                    resolve();
+                });
                 socket.on('timeout', () => { socket.destroy(); resolve(); });
                 socket.on('error', () => { socket.destroy(); resolve(); });
                 socket.connect(1400, host);
             }));
         }
     }
+
     await Promise.all(scanPromises);
+    log(`Scan finished. Found ${foundHosts.length} potential hosts. Fetching details...`);
+
     const detailedDevices = await Promise.all(foundHosts.map(async (host) => {
         try {
             const device = new Sonos(host);
+            // Use withRetry or at least a timeout for these UPnP calls
             const [zoneAttrs, volume] = await Promise.all([
-                device.getZoneAttrs(),
-                device.getVolume()
+                device.getZoneAttrs().catch(err => {
+                    log(`[WARN] Failed to get ZoneAttrs for ${host}: ${err.message}`);
+                    return { CurrentZoneName: `Sonos (${host})` };
+                }),
+                device.getVolume().catch(() => 50)
             ]);
             return { host, name: zoneAttrs.CurrentZoneName, model: 'Sonos', volume };
-        } catch (e) { return null; }
+        } catch (e) {
+            log(`[ERROR] Detail fetch failed for ${host}: ${e.message}`);
+            return null;
+        }
     }));
-    res.json(detailedDevices.filter(d => d !== null));
+
+    const results = detailedDevices.filter(d => d !== null);
+    log(`Scan returned ${results.length} active Sonos devices.`);
+    res.json(results);
 });
 
 // Playlist
@@ -1039,12 +1172,13 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     }
     assertStillLatest();
     const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
-    const jsRuntimeFlag = YT_JS_RUNTIME ? ` --js-runtimes "${YT_JS_RUNTIME}"` : '';
+    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
     const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     const fallbackTitle = typeof fallbackMeta?.title === 'string' ? fallbackMeta.title.trim() : '';
     const fallbackDurationSec = Number.isFinite(fallbackMeta?.durationSec) ? Number(fallbackMeta.durationSec) : null;
     const fallbackDurationLabel = typeof fallbackMeta?.durationLabel === 'string' ? fallbackMeta.durationLabel.trim() : '';
-    let title = fallbackTitle || 'Sonons Audio';
+    const fallbackVideoId = extractVideoIdFromYoutubeUrl(normalizedUrl);
+    let title = fallbackTitle || (fallbackVideoId ? `YouTube: ${fallbackVideoId}` : 'Sonons Audio');
     let art = '';
     let durationSec = fallbackDurationSec;
     let durationLabel = fallbackDurationLabel || (durationSec != null ? formatDuration(durationSec) : null);
@@ -1082,21 +1216,15 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     currentTitle = title;
     currentDurationSec = durationSec;
     currentDurationLabel = durationLabel;
-    if (metadataProbeFailed && (!fallbackTitle || !currentTitle || currentTitle === 'Sonons Audio' || currentTitle === 'Sonons Stream')) {
-        void (async () => {
-            try {
-                const oembedTitle = await fetchTitleFromOEmbed(normalizedUrl);
-                if (!oembedTitle) return;
-                if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
-                if (currentTitle === 'Sonons Audio' || currentTitle === 'Sonons Stream' || !currentTitle) {
-                    currentTitle = oembedTitle;
-                    log('- Metadata title refreshed via oEmbed');
-                }
-            } catch (oembedErr) {
-                const shortOembedErr = String(oembedErr?.message || oembedErr).split('\n')[0];
-                log(`[WARN] oEmbed title fetch failed: ${shortOembedErr}`);
+    if (metadataProbeFailed && (!fallbackTitle || isGenericPlaybackTitle(currentTitle))) {
+        void resolveTitleFallback(normalizedUrl).then((resolved) => {
+            if (!resolved) return;
+            if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
+            if (isGenericPlaybackTitle(currentTitle)) {
+                currentTitle = resolved.title;
+                log(`- Metadata title refreshed via ${resolved.source}`);
             }
-        })();
+        });
     }
     if (metadataProbeFailed && (!fallbackTitle || durationSec == null)) {
         void (async () => {
@@ -1343,7 +1471,7 @@ app.get('/sonons.mp3', async (req, res) => {
         if (waitMs > 0) {
             const startedAt = Date.now();
             const pendingDirectInfo = resolveDirectUrl(currentYoutubeUrl);
-            pendingDirectInfo.catch(() => {});
+            pendingDirectInfo.catch(() => { });
             try {
                 directUrl = await Promise.race([
                     pendingDirectInfo.then((info) => info.url),
@@ -1412,9 +1540,9 @@ app.get('/sonons.mp3', async (req, res) => {
         if (YT_COOKIES) ytArgs.push('--cookies', YT_COOKIES);
         if (YT_JS_RUNTIME) ytArgs.push('--js-runtimes', YT_JS_RUNTIME);
         if (YT_FORCE_IPV4) ytArgs.push('-4');
+        ytArgs.push('--extractor-args', YT_EXTRACTOR_ARGS);
+        if (YT_USER_AGENT) ytArgs.push('--user-agent', YT_USER_AGENT);
         ytArgs.push(
-            '--extractor-args', YT_EXTRACTOR_ARGS,
-            '--user-agent', YT_USER_AGENT,
             '-f', '140/251/250/249/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/18/best',
             '-o', '-',
             currentYoutubeUrl
@@ -1485,6 +1613,7 @@ app.get('/sonons.mp3', async (req, res) => {
             endedNaturally = true;
             if (playlistMode) {
                 setTimeout(() => {
+                    if (streamToken !== playbackStartToken) return;
                     if (activeStreamCount === 0) {
                         advancePlaylist(lastPlayback?.deviceHost);
                     }

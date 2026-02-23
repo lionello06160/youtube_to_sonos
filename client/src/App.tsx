@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import type { Device, LoopMode, PlaylistTrack } from './types';
 
-const API_URL = `http://10.10.4.14:3005`;
+const API_URL = `http://${window.location.hostname}:3005`;
 
 const PlayOneIcon = ({ className }: { className?: string }) => (
   <svg
