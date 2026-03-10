@@ -93,6 +93,7 @@ RSYNC_OPTS=(
   --exclude 'server/uploads/'
   --exclude 'server/library.json'
   --exclude 'server/media-cache/'
+  --exclude 'server/yt-cookies.txt'
   --exclude '*.log'
 )
 

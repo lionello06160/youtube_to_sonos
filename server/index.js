@@ -770,23 +770,18 @@ const scheduleDailyStop = () => {
     const delay = next.getTime() - now.getTime();
     log(`Daily stop scheduled for ${next.toLocaleString()}`);
     dailyStopTimer = setTimeout(async () => {
+        const stopHost = lastPlayback?.deviceHost || '';
+        playbackStartToken += 1;
         try {
-            if (lastPlayback?.deviceHost) {
-                const device = new Sonos(lastPlayback.deviceHost);
+            if (stopHost) {
+                const device = new Sonos(stopHost);
                 await device.stop();
                 log('Daily stop: playback stopped.');
             }
         } catch (err) {
             log(`[WARN] Daily stop failed: ${err.message}`);
         } finally {
-            currentYoutubeUrl = '';
-            currentDirectUrl = '';
-            currentDirectUrlAt = 0;
-            currentDirectUrlFor = '';
-            currentDirectUrlPromise = null;
-            currentDirectUrlPromiseFor = '';
-            currentDurationSec = null;
-            currentDurationLabel = null;
+            resetPlaybackState();
             scheduleDailyStop();
         }
     }, delay);
