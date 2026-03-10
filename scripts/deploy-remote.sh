@@ -90,6 +90,9 @@ RSYNC_OPTS=(
   --exclude 'server/node_modules/'
   --exclude 'client/dist/'
   --exclude 'server/server.log'
+  --exclude 'server/uploads/'
+  --exclude 'server/library.json'
+  --exclude 'server/media-cache/'
   --exclude '*.log'
 )
 
@@ -132,11 +135,13 @@ restart_with_nohup() {
   sleep 1
 
   cd ../client
+  pkill -f 'serve -s dist -l 4173' || true
   pkill -f 'vite --host 0.0.0.0 --port 5173' || true
-  nohup npm run dev -- --host 0.0.0.0 --port 5173 > client.dev.log 2>&1 &
-  sleep 1
+  npm run build > client.build.log 2>&1
+  nohup serve -s dist -l 4173 > client.serve.log 2>&1 &
+  sleep 2
 
-  ps -ef | grep -E 'node index.js|vite --host 0.0.0.0 --port 5173' | grep -v grep || true
+  ps -ef | grep -E 'node index.js|serve -s dist -l 4173' | grep -v grep || true
 }
 
 has_services=0

@@ -21,6 +21,13 @@ macOS (Homebrew):
 brew install yt-dlp ffmpeg
 ```
 
+If the server is started from a GUI app and cannot see your shell `PATH`, set absolute paths instead:
+
+```bash
+export YT_DLP_BIN=/opt/homebrew/bin/yt-dlp
+export FFMPEG_BIN=/opt/homebrew/bin/ffmpeg
+```
+
 ## Configuration
 
 Update these two values to match your network:
@@ -116,6 +123,10 @@ Note: the client has a “manual IP” UI, but `/add-device` is not implemented 
 - **YouTube errors (403 / format not available)**
   - Update `yt-dlp` to latest.
   - Some videos require cookies or different extractor settings.
+
+- **Playback fails with "Missing dependency"**
+  - Install the missing tools with `brew install yt-dlp ffmpeg`.
+  - Or set `YT_DLP_BIN` / `FFMPEG_BIN` to the full executable paths if the server process does not inherit your shell `PATH`.
 
 - **UPnP 1023 errors**
   - Usually means the command was sent to a non-coordinator device.

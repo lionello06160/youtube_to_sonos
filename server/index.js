@@ -1,22 +1,26 @@
 const express = require('express');
 const { Sonos, AsyncDeviceDiscovery } = require('sonos');
 const cors = require('cors');
-const { spawn, exec } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const crypto = require('crypto');
+const multer = require('multer');
 const util = require('util');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
-const execPromise = util.promisify(exec);
+const execFilePromise = util.promisify(execFile);
 
 const app = express();
 const PORT = 3005;
 const HOST_IP = '10.10.4.14';
 const VERSION = '8.0 (Clean URI)';
 const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
+const LIBRARY_PATH = path.join(__dirname, 'library.json');
 const DEFAULT_LOOP_MODE = 'all';
 const YT_COOKIES_FILE = path.join(__dirname, 'yt-cookies.txt');
 const YT_COOKIES = process.env.YT_COOKIES || (fs.existsSync(YT_COOKIES_FILE) ? YT_COOKIES_FILE : '');
+const YT_DLP_ENV = 'YT_DLP_BIN';
+const FFMPEG_ENV = 'FFMPEG_BIN';
 const YT_JS_RUNTIME = process.env.YT_JS_RUNTIME || 'node';
 const YT_EXTRACTOR_ARGS = process.env.YT_EXTRACTOR_ARGS || 'youtube:player_client=mweb,web,tvhtml5';
 const YT_USER_AGENT = process.env.YT_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
@@ -28,6 +32,20 @@ const YT_DIRECT_URL_RESOLVE_TIMEOUT_MS = Number(process.env.YT_DIRECT_URL_RESOLV
 const YT_OEMBED_TIMEOUT_MS = Number(process.env.YT_OEMBED_TIMEOUT_MS || 10000);
 const YT_WATCH_TITLE_TIMEOUT_MS = Number(process.env.YT_WATCH_TITLE_TIMEOUT_MS || 8000);
 const YT_TITLE_FALLBACK_TIMEOUT_MS = Number(process.env.YT_TITLE_FALLBACK_TIMEOUT_MS || 20000);
+const YT_DOWNLOAD_TIMEOUT_MS = Number(process.env.YT_DOWNLOAD_TIMEOUT_MS || 15 * 60 * 1000);
+const PLAYBACK_MONITOR_INTERVAL_MS = Number(process.env.PLAYBACK_MONITOR_INTERVAL_MS || 3000);
+const MEDIA_CACHE_DIR = path.join(__dirname, 'media-cache');
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const BINARY_PATHS = {
+    'yt-dlp': [
+        '/opt/homebrew/bin/yt-dlp',
+        '/usr/local/bin/yt-dlp'
+    ],
+    ffmpeg: [
+        '/opt/homebrew/bin/ffmpeg',
+        '/usr/local/bin/ffmpeg'
+    ]
+};
 
 // STORE STATE LOCALLY
 // This allows us to give Sonos a clean URL without messy query params
@@ -48,6 +66,13 @@ let currentDirectUrlPromise = null;
 let currentDirectUrlPromiseFor = '';
 const DIRECT_URL_TTL_MS = 5 * 60 * 1000;
 let activeStreamCount = 0;
+let currentMediaFile = '';
+let currentMediaToken = '';
+let currentPlaybackState = 'stopped';
+let currentSourceType = 'idle';
+let currentLibraryItemId = null;
+let playbackMonitorTimer = null;
+let playbackMonitorBusy = false;
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const DAILY_STOP_HOUR = 17;
 const DAILY_STOP_MINUTE = 0;
@@ -61,6 +86,7 @@ let autoConfig = {
     autoShutdownTime: '',
     autoPlayOnBoot: false
 };
+let libraryItems = [];
 let playlistItems = [];
 let playlistCurrentIndex = null;
 let playlistCurrentUid = null;
@@ -69,6 +95,7 @@ let loopMode = DEFAULT_LOOP_MODE;
 let shuffleOrder = [];
 let shufflePos = 0;
 let playlistAdvanceLock = false;
+let libraryAdvanceLock = false;
 let playbackStartToken = 0;
 const PLAYBACK_SUPERSEDED_CODE = 'PLAYBACK_SUPERSEDED';
 
@@ -88,6 +115,289 @@ const getEffectiveStopTime = () => {
     const parsed = parseTime(autoConfig.autoStopTime);
     if (parsed) return formatTimeParts(parsed.hour, parsed.minute);
     return formatTimeParts(DAILY_STOP_HOUR, DAILY_STOP_MINUTE);
+};
+const isExecutableFile = (candidate) => {
+    if (!candidate) return false;
+    try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+    } catch {
+        return false;
+    }
+};
+const resolveBinaryPath = (binaryName, configuredPath = '') => {
+    const candidates = [];
+    if (configuredPath) candidates.push(configuredPath);
+    const pathDirs = String(process.env.PATH || '')
+        .split(path.delimiter)
+        .map((segment) => segment.trim())
+        .filter(Boolean);
+    for (const dir of pathDirs) {
+        candidates.push(path.join(dir, binaryName));
+    }
+    candidates.push(...(BINARY_PATHS[binaryName] || []));
+    const seen = new Set();
+    for (const candidate of candidates) {
+        if (!candidate || seen.has(candidate)) continue;
+        seen.add(candidate);
+        if (isExecutableFile(candidate)) return candidate;
+    }
+    return null;
+};
+const RESOLVED_BINARIES = {
+    'yt-dlp': resolveBinaryPath('yt-dlp', process.env[YT_DLP_ENV] || ''),
+    ffmpeg: resolveBinaryPath('ffmpeg', process.env[FFMPEG_ENV] || '')
+};
+const YT_DLP_BIN = RESOLVED_BINARIES['yt-dlp'];
+const FFMPEG_BIN = RESOLVED_BINARIES.ffmpeg;
+const FFPROBE_BIN = (() => {
+    const ffmpegDir = FFMPEG_BIN ? path.dirname(FFMPEG_BIN) : '';
+    const candidate = ffmpegDir ? path.join(ffmpegDir, 'ffprobe') : '';
+    return resolveBinaryPath('ffprobe', process.env.FFPROBE_BIN || candidate);
+})();
+const createMissingDependencyError = (missingNames) => {
+    const missing = Array.from(new Set(missingNames)).filter(Boolean);
+    const plural = missing.length > 1;
+    const envVars = missing
+        .map((name) => (name === 'yt-dlp' ? YT_DLP_ENV : FFMPEG_ENV))
+        .join('/');
+    const installCmd = `brew install ${missing.join(' ')}`;
+    return new Error(
+        `Missing ${plural ? 'dependencies' : 'dependency'}: ${missing.join(', ')}. `
+        + `Install with "${installCmd}" or set ${envVars} to the executable path.`
+    );
+};
+const assertDependenciesAvailable = (...requiredNames) => {
+    const missing = requiredNames.filter((name) => !RESOLVED_BINARIES[name]);
+    if (missing.length) {
+        throw createMissingDependencyError(missing);
+    }
+};
+const buildBinaryEnv = () => {
+    const env = { ...process.env };
+    const prependDirs = [
+        YT_DLP_BIN ? path.dirname(YT_DLP_BIN) : '',
+        FFMPEG_BIN ? path.dirname(FFMPEG_BIN) : ''
+    ].filter(Boolean);
+    if (prependDirs.length) {
+        const existingPath = String(env.PATH || '');
+        env.PATH = `${prependDirs.join(path.delimiter)}${existingPath ? `${path.delimiter}${existingPath}` : ''}`;
+    }
+    return env;
+};
+const execBinary = (binaryName, args, options = {}) => {
+    assertDependenciesAvailable(binaryName);
+    return execFilePromise(RESOLVED_BINARIES[binaryName], args, {
+        env: buildBinaryEnv(),
+        ...options
+    });
+};
+const execFfprobe = (args, options = {}) => {
+    if (!FFPROBE_BIN) {
+        throw new Error('Missing dependency: ffprobe. Install ffmpeg or set FFPROBE_BIN.');
+    }
+    return execFilePromise(FFPROBE_BIN, args, {
+        env: buildBinaryEnv(),
+        ...options
+    });
+};
+const ensureMediaCacheDir = () => {
+    fs.mkdirSync(MEDIA_CACHE_DIR, { recursive: true });
+};
+const clearMediaFiles = (keepPaths = []) => {
+    ensureMediaCacheDir();
+    const keep = new Set(keepPaths.filter(Boolean).map((value) => path.resolve(value)));
+    for (const entry of fs.readdirSync(MEDIA_CACHE_DIR)) {
+        const filePath = path.join(MEDIA_CACHE_DIR, entry);
+        if (keep.has(path.resolve(filePath))) continue;
+        try {
+            fs.unlinkSync(filePath);
+        } catch (err) {
+            log(`[WARN] Failed to delete cached media ${entry}: ${err.message}`);
+        }
+    }
+};
+const clearMediaFilesByPrefix = (prefix = '') => {
+    if (!prefix) return;
+    ensureMediaCacheDir();
+    for (const entry of fs.readdirSync(MEDIA_CACHE_DIR)) {
+        if (!entry.startsWith(`${prefix}.`)) continue;
+        try {
+            fs.unlinkSync(path.join(MEDIA_CACHE_DIR, entry));
+        } catch (err) {
+            log(`[WARN] Failed to delete partial media ${entry}: ${err.message}`);
+        }
+    }
+};
+const resetMediaState = ({ keepCurrentFile = false, keepPaths = [] } = {}) => {
+    const nextKeepPaths = [...keepPaths];
+    if (keepCurrentFile && currentMediaFile) {
+        nextKeepPaths.push(currentMediaFile);
+    }
+    if (!keepCurrentFile && nextKeepPaths.length === 0) {
+        currentMediaFile = '';
+        currentMediaToken = '';
+    }
+    clearMediaFiles(nextKeepPaths);
+};
+const ensureUploadsDir = () => {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+};
+const stripExtension = (value = '') => value.replace(/\.[^.]+$/, '');
+const decodeUploadText = (value = '') => {
+    const raw = String(value || '');
+    if (!raw) return raw;
+    try {
+        const decoded = Buffer.from(raw, 'latin1').toString('utf8');
+        if (decoded.includes('\uFFFD')) return raw;
+        const decodedMeaningful = /[\u3040-\u30ff\u3400-\u9fff]/.test(decoded);
+        const rawMojibakeLike = /[ÃÂÅÆÇÉÐÑÕØÙÚÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ]/.test(raw);
+        if ((decodedMeaningful || rawMojibakeLike) && decoded !== raw) {
+            return decoded;
+        }
+    } catch {
+        // ignore decode failures
+    }
+    return raw;
+};
+const sanitizeLibraryTitle = (value = '') =>
+    decodeUploadText(String(value || ''))
+        .replace(/\.[^.]+$/, '')
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim() || 'Untitled Upload';
+const normalizeLibraryItem = (item = {}) => {
+    const originalName = decodeUploadText(item.originalName || '');
+    const title = sanitizeLibraryTitle(item.title || originalName || '');
+    return {
+        ...item,
+        title,
+        originalName,
+        durationSec: Number.isFinite(item.durationSec) ? item.durationSec : null,
+        durationLabel: item.durationLabel || (Number.isFinite(item.durationSec) ? formatDuration(item.durationSec) : null)
+    };
+};
+const sortLibraryItems = (items = []) =>
+    [...items].sort((a, b) => String(b.uploadedAt || '').localeCompare(String(a.uploadedAt || '')));
+const persistLibraryState = () => {
+    const payload = libraryItems.map((item) => ({
+        id: item.id,
+        title: item.title,
+        originalName: item.originalName,
+        storedName: item.storedName,
+        mimeType: item.mimeType,
+        size: item.size,
+        durationSec: item.durationSec ?? null,
+        durationLabel: item.durationLabel ?? null,
+        uploadedAt: item.uploadedAt
+    }));
+    fs.writeFileSync(LIBRARY_PATH, JSON.stringify(payload, null, 2));
+};
+const getLibraryItemPath = (item) => path.join(UPLOADS_DIR, item.storedName);
+const syncLibraryWithFiles = () => {
+    ensureUploadsDir();
+    const existing = new Set(fs.readdirSync(UPLOADS_DIR));
+    libraryItems = sortLibraryItems(
+        libraryItems.filter((item) => item.storedName && existing.has(item.storedName))
+    );
+};
+const probeAudioDuration = async (filePath) => {
+    try {
+        const { stdout } = await execFfprobe([
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            filePath
+        ], { timeout: 10000, maxBuffer: 1024 * 128 });
+        const seconds = Math.floor(Number.parseFloat(String(stdout || '').trim()));
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+    } catch (err) {
+        log(`[WARN] Failed to probe duration for ${path.basename(filePath)}: ${err.message}`);
+        return null;
+    }
+};
+const ensureLibraryDurations = async () => {
+    let changed = false;
+    for (const item of libraryItems) {
+        if (Number.isFinite(item.durationSec) && item.durationSec > 0) continue;
+        const filePath = getLibraryItemPath(item);
+        if (!fs.existsSync(filePath)) continue;
+        const durationSec = await probeAudioDuration(filePath);
+        if (durationSec == null) continue;
+        item.durationSec = durationSec;
+        item.durationLabel = formatDuration(durationSec);
+        changed = true;
+    }
+    if (changed) persistLibraryState();
+};
+const loadLibraryState = () => {
+    ensureUploadsDir();
+    if (!fs.existsSync(LIBRARY_PATH)) {
+        libraryItems = [];
+        return;
+    }
+    try {
+        const raw = fs.readFileSync(LIBRARY_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        libraryItems = Array.isArray(parsed) ? sortLibraryItems(parsed.map(normalizeLibraryItem)) : [];
+        syncLibraryWithFiles();
+        persistLibraryState();
+    } catch (err) {
+        log(`[WARN] Failed to read library.json: ${err.message}`);
+        libraryItems = [];
+    }
+};
+const libraryStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        ensureUploadsDir();
+        cb(null, UPLOADS_DIR);
+    },
+    filename: (req, file, cb) => {
+        const id = crypto.randomUUID();
+        const ext = path.extname(file.originalname || '').toLowerCase() || '.bin';
+        cb(null, `${id}${ext}`);
+    }
+});
+const uploadLibraryFiles = multer({
+    storage: libraryStorage,
+    limits: {
+        fileSize: 1024 * 1024 * 512
+    }
+});
+const downloadAudioFile = async (youtubeUrl, token) => {
+    assertDependenciesAvailable('yt-dlp', 'ffmpeg');
+    ensureMediaCacheDir();
+    const outputTemplate = path.join(MEDIA_CACHE_DIR, `${token}.%(ext)s`);
+    const finalPath = path.join(MEDIA_CACHE_DIR, `${token}.mp3`);
+    const args = ['--no-config', '--no-warnings', '--no-playlist', '--no-progress'];
+    if (YT_COOKIES) args.push('--cookies', YT_COOKIES);
+    if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+    if (YT_FORCE_IPV4) args.push('-4');
+    args.push(
+        '--extractor-args', YT_EXTRACTOR_ARGS,
+        '--user-agent', YT_USER_AGENT,
+        '--ffmpeg-location', path.dirname(FFMPEG_BIN),
+        '-f', 'bestaudio/best',
+        '-x',
+        '--audio-format', 'mp3',
+        '--audio-quality', '0',
+        '-o', outputTemplate,
+        youtubeUrl
+    );
+    log(`- Downloading audio to cache (${token})`);
+    try {
+        await execBinary('yt-dlp', args, {
+            maxBuffer: 1024 * 1024 * 2,
+            timeout: YT_DOWNLOAD_TIMEOUT_MS
+        });
+    } catch (err) {
+        clearMediaFilesByPrefix(token);
+        throw err;
+    }
+    if (!fs.existsSync(finalPath)) {
+        throw new Error(`Downloaded file missing: ${path.basename(finalPath)}`);
+    }
+    return finalPath;
 };
 
 const formatDuration = (seconds) => {
@@ -214,13 +524,17 @@ const fetchTitleFromWatchPage = async (youtubeUrl) => {
 };
 
 const fetchTitleViaYtDlp = async (youtubeUrl, timeoutMs = YT_TITLE_FALLBACK_TIMEOUT_MS) => {
-    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
-    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
-    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
-    const { stdout } = await execPromise(
-        `yt-dlp --no-config --no-warnings --no-playlist --skip-download${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" "${youtubeUrl}"`,
-        { maxBuffer: 1024 * 256, timeout: timeoutMs }
+    const args = ['--no-config', '--no-warnings', '--no-playlist', '--skip-download'];
+    if (YT_COOKIES) args.push('--cookies', YT_COOKIES);
+    if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+    if (YT_FORCE_IPV4) args.push('-4');
+    args.push(
+        '--extractor-args', YT_EXTRACTOR_ARGS,
+        '--user-agent', YT_USER_AGENT,
+        '--print', '%(title)s',
+        youtubeUrl
     );
+    const { stdout } = await execBinary('yt-dlp', args, { maxBuffer: 1024 * 256, timeout: timeoutMs });
     const firstLine = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
     return sanitizeFetchedTitle(firstLine || '');
 };
@@ -363,6 +677,8 @@ const log = (msg) => {
     logs.push(line);
     if (logs.length > 100) logs.shift();
 };
+log(`Binary yt-dlp: ${YT_DLP_BIN || 'missing'}`);
+log(`Binary ffmpeg: ${FFMPEG_BIN || 'missing'}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isEpipe = (err) =>
     !!err && (err.code === 'EPIPE' || String(err.message || '').includes('EPIPE'));
@@ -522,15 +838,22 @@ const resolveDirectUrl = async (youtubeUrl) => {
     if (currentDirectUrlPromise && currentDirectUrlPromiseFor === normalizedUrl) {
         return currentDirectUrlPromise;
     }
-    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
-    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
-    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     currentDirectUrlPromiseFor = normalizedUrl;
     currentDirectUrlPromise = (async () => {
-        const { stdout } = await execPromise(
-            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag} --js-runtimes "${YT_JS_RUNTIME}"${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" -f "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best" -g "${normalizedUrl}"`,
-            { maxBuffer: 1024 * 1024, timeout: YT_DIRECT_URL_RESOLVE_TIMEOUT_MS }
+        const args = ['--no-config', '--no-warnings', '--no-playlist'];
+        if (YT_COOKIES) args.push('--cookies', YT_COOKIES);
+        if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+        if (YT_FORCE_IPV4) args.push('-4');
+        args.push(
+            '--extractor-args', YT_EXTRACTOR_ARGS,
+            '--user-agent', YT_USER_AGENT,
+            '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            '-g', normalizedUrl
         );
+        const { stdout } = await execBinary('yt-dlp', args, {
+            maxBuffer: 1024 * 1024,
+            timeout: YT_DIRECT_URL_RESOLVE_TIMEOUT_MS
+        });
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
         const resolvedUrl = lines.find((line) => /^https?:\/\//i.test(line));
         if (!resolvedUrl) {
@@ -585,13 +908,19 @@ const buildTrackFromEntry = (entry = {}) => {
 
 const resolvePlaylistTracks = async (inputUrl) => {
     const normalizedUrl = normalizeYoutubeUrl(inputUrl);
-    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
-    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
-    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
-    const { stdout } = await execPromise(
-        `yt-dlp --no-config --no-warnings --flat-playlist${cookieFlag} --js-runtimes "${YT_JS_RUNTIME}"${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --dump-single-json "${normalizedUrl}"`,
-        { maxBuffer: 1024 * 1024 * 2, timeout: 30000 }
+    const args = ['--no-config', '--no-warnings', '--flat-playlist'];
+    if (YT_COOKIES) args.push('--cookies', YT_COOKIES);
+    if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+    if (YT_FORCE_IPV4) args.push('-4');
+    args.push(
+        '--extractor-args', YT_EXTRACTOR_ARGS,
+        '--user-agent', YT_USER_AGENT,
+        '--dump-single-json', normalizedUrl
     );
+    const { stdout } = await execBinary('yt-dlp', args, {
+        maxBuffer: 1024 * 1024 * 2,
+        timeout: 30000
+    });
     const payload = JSON.parse(stdout);
     const entries = Array.isArray(payload?.entries) ? payload.entries : [payload];
     const tracks = entries.map(buildTrackFromEntry).filter(Boolean);
@@ -667,9 +996,44 @@ const advancePlaylist = async (deviceHost) => {
         playlistAdvanceLock = false;
     }
 };
+const advanceLibraryPlayback = async (deviceHost) => {
+    if (libraryAdvanceLock) return;
+    if (!currentLibraryItemId || !libraryItems.length || !deviceHost) return;
+    libraryAdvanceLock = true;
+    try {
+        const currentIndex = libraryItems.findIndex((item) => item.id === currentLibraryItemId);
+        if (currentIndex < 0) return;
+        let nextIndex = currentIndex;
+        if (loopMode === 'single') {
+            // keep same item
+        } else if (loopMode === 'shuffle') {
+            if (libraryItems.length > 1) {
+                do {
+                    nextIndex = Math.floor(Math.random() * libraryItems.length);
+                } while (nextIndex === currentIndex);
+            }
+        } else {
+            nextIndex = (currentIndex + 1) % libraryItems.length;
+        }
+        const nextItem = libraryItems[nextIndex];
+        if (!nextItem) return;
+        await startUploadedPlayback(deviceHost, nextItem);
+    } catch (err) {
+        if (isPlaybackSupersededError(err)) {
+            log('- Library advance superseded by newer playback request.');
+            return;
+        }
+        log(`[WARN] Library advance failed: ${err.message}`);
+    } finally {
+        libraryAdvanceLock = false;
+    }
+};
 
 log(`BOOT: Starting Sonons v${VERSION}...`);
+ensureMediaCacheDir();
+ensureUploadsDir();
 loadAutoConfig();
+loadLibraryState();
 loadPlaylistState();
 if (YT_COOKIES) {
     log(`YT cookies enabled: ${YT_COOKIES}`);
@@ -678,6 +1042,8 @@ if (YT_JS_RUNTIME) {
     log(`YT JS runtime: ${YT_JS_RUNTIME}`);
 }
 log(`YT extractor args: ${YT_EXTRACTOR_ARGS}`);
+log(`Media cache: ${MEDIA_CACHE_DIR}`);
+log(`Uploads dir: ${UPLOADS_DIR}`);
 if (YT_FORCE_IPV4) {
     log('YT force IPv4 enabled');
 }
@@ -720,6 +1086,50 @@ const resolveCoordinatorHost = async (deviceHost) => {
         log(`[WARN] Coordinator lookup failed: ${err.message}`);
     }
     return deviceHost;
+};
+
+const stopPlaybackMonitor = () => {
+    if (playbackMonitorTimer) {
+        clearInterval(playbackMonitorTimer);
+        playbackMonitorTimer = null;
+    }
+    playbackMonitorBusy = false;
+};
+const startPlaybackMonitor = () => {
+    if (playbackMonitorTimer) return;
+    playbackMonitorTimer = setInterval(async () => {
+        if (playbackMonitorBusy) return;
+        if (!lastPlayback?.deviceHost) return;
+        playbackMonitorBusy = true;
+        const previousState = currentPlaybackState;
+        try {
+            const device = new Sonos(lastPlayback.deviceHost);
+            const nextState = String(await device.getCurrentState() || 'stopped').toLowerCase();
+            currentPlaybackState = nextState;
+            if (nextState !== previousState) {
+                log(`- Playback state: ${previousState} -> ${nextState}`);
+            }
+            if (
+                playlistMode
+                && previousState === 'playing'
+                && nextState === 'stopped'
+                && !playlistAdvanceLock
+            ) {
+                advancePlaylist(lastPlayback.deviceHost);
+            } else if (
+                currentSourceType === 'upload'
+                && previousState === 'playing'
+                && nextState === 'stopped'
+                && !libraryAdvanceLock
+            ) {
+                advanceLibraryPlayback(lastPlayback.deviceHost);
+            }
+        } catch (err) {
+            log(`[WARN] Playback monitor failed: ${err.message}`);
+        } finally {
+            playbackMonitorBusy = false;
+        }
+    }, PLAYBACK_MONITOR_INTERVAL_MS);
 };
 
 const getZoneNameByHost = async (deviceHost) => {
@@ -782,8 +1192,13 @@ const resetPlaybackState = () => {
     currentDirectUrlPromise = null;
     currentDirectUrlPromiseFor = '';
     activeStreamCount = 0;
+    currentPlaybackState = 'stopped';
+    currentSourceType = 'idle';
+    currentLibraryItemId = null;
     restartAttempts = 0;
     lastPlayback = null;
+    stopPlaybackMonitor();
+    resetMediaState();
 };
 
 app.use(cors());
@@ -794,6 +1209,28 @@ app.use((req, res, next) => {
     log(`[REQ] ${req.method} ${req.url}`);
     next();
 });
+app.use('/media', express.static(MEDIA_CACHE_DIR, {
+    fallthrough: false,
+    setHeaders: (res, filePath) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        if (filePath.endsWith('.mp3')) {
+            res.setHeader('Content-Type', 'audio/mpeg');
+        }
+    }
+}));
+app.use('/uploads', express.static(UPLOADS_DIR, {
+    fallthrough: false,
+    setHeaders: (res, filePath) => {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        if (filePath.endsWith('.mp3')) {
+            res.setHeader('Content-Type', 'audio/mpeg');
+        }
+    }
+}));
 
 app.get('/check', (req, res) => res.send(`<h1>Sonons v${VERSION} is ALIVE</h1>`));
 app.get('/logs', (req, res) => res.send(`<pre>${logs.join('\n')}</pre>`));
@@ -868,6 +1305,104 @@ app.get('/scan', async (req, res) => {
     const results = detailedDevices.filter(d => d !== null);
     log(`Scan returned ${results.length} active Sonos devices.`);
     res.json(results);
+});
+
+app.get('/library', (req, res) => {
+    syncLibraryWithFiles();
+    ensureLibraryDurations()
+        .catch((err) => log(`[WARN] Failed to refresh library durations: ${err.message}`))
+        .finally(() => {
+            res.json({ items: libraryItems });
+        });
+});
+
+app.post('/library/upload', uploadLibraryFiles.array('files', 24), async (req, res) => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!files.length) {
+        res.status(400).send('files required');
+        return;
+    }
+    const added = await Promise.all(files.map(async (file) => {
+        const id = stripExtension(file.filename);
+        const durationSec = await probeAudioDuration(path.join(UPLOADS_DIR, file.filename));
+        const originalName = decodeUploadText(file.originalname);
+        return {
+            id,
+            title: sanitizeLibraryTitle(originalName),
+            originalName,
+            storedName: file.filename,
+            mimeType: file.mimetype || 'application/octet-stream',
+            size: file.size,
+            durationSec,
+            durationLabel: durationSec != null ? formatDuration(durationSec) : null,
+            uploadedAt: new Date().toISOString()
+        };
+    }));
+    libraryItems = sortLibraryItems([...added, ...libraryItems]);
+    persistLibraryState();
+    res.send({ items: libraryItems, added });
+});
+
+app.delete('/library/:id', async (req, res) => {
+    const { id } = req.params;
+    const item = libraryItems.find((entry) => entry.id === id);
+    if (!item) {
+        res.status(404).send('library item not found');
+        return;
+    }
+    const filePath = getLibraryItemPath(item);
+    const deletingCurrent = currentMediaFile && path.resolve(currentMediaFile) === path.resolve(filePath);
+    libraryItems = libraryItems.filter((entry) => entry.id !== id);
+    persistLibraryState();
+    try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (err) {
+        log(`[WARN] Failed to delete upload ${item.storedName}: ${err.message}`);
+    }
+    if (deletingCurrent && lastPlayback?.deviceHost) {
+        try {
+            const device = new Sonos(lastPlayback.deviceHost);
+            await withRetry(() => device.stop(), { label: 'Stop deleted upload', attempts: 2, baseDelay: 300 });
+        } catch (err) {
+            log(`[WARN] Stop deleted upload failed: ${err.message}`);
+        }
+        resetPlaybackState();
+    }
+    res.send({ items: libraryItems });
+});
+
+app.post('/library/play', async (req, res) => {
+    const { deviceHost, id } = req.body || {};
+    if (!deviceHost || !id) {
+        res.status(400).send('deviceHost and id required');
+        return;
+    }
+    const item = libraryItems.find((entry) => entry.id === id);
+    if (!item) {
+        res.status(404).send('library item not found');
+        return;
+    }
+    try {
+        if (!Number.isFinite(item.durationSec) || item.durationSec <= 0) {
+            const durationSec = await probeAudioDuration(getLibraryItemPath(item));
+            if (durationSec != null) {
+                item.durationSec = durationSec;
+                item.durationLabel = formatDuration(durationSec);
+                persistLibraryState();
+            }
+        }
+        playlistMode = false;
+        const { title } = await startUploadedPlayback(deviceHost, item);
+        res.send({ status: 'playing', title, item });
+    } catch (err) {
+        if (isPlaybackSupersededError(err)) {
+            log(`[WARN] Upload play superseded: ${err.message}`);
+            res.status(409).send(err.message);
+            return;
+        }
+        log(`[ERR] Upload play: ${err.message}`);
+        res.status(500).send(err.message);
+    }
 });
 
 // Playlist
@@ -1112,8 +1647,8 @@ app.post('/group', async (req, res) => {
 });
 
 const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
+    assertDependenciesAvailable('yt-dlp', 'ffmpeg');
     const startToken = ++playbackStartToken;
-    const playbackStartedAt = Date.now();
     const assertStillLatest = () => {
         if (startToken !== playbackStartToken) {
             throw createPlaybackSupersededError();
@@ -1124,56 +1659,6 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
         log(`- Normalized URL: ${normalizedUrl}`);
     }
     log(`SETUP CLEAN PLAY: ${normalizedUrl} on ${deviceHost}`);
-
-    // 1. UPDATE STATE
-    currentYoutubeUrl = normalizedUrl;
-    currentDirectUrl = '';
-    currentDirectUrlAt = 0;
-    currentDirectUrlFor = '';
-    currentDirectUrlPromise = null;
-    currentDirectUrlPromiseFor = '';
-    const prefetchStartedAt = Date.now();
-    void resolveDirectUrl(normalizedUrl)
-        .then((directInfo) => {
-            const resolvedDirectUrl = directInfo?.url || '';
-            const elapsedMs = Date.now() - prefetchStartedAt;
-            if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
-            const inferredTitle = String(directInfo?.title || '').trim();
-            if (inferredTitle && (currentTitle === 'Sonons Audio' || currentTitle === 'Sonons Stream' || !currentTitle)) {
-                currentTitle = inferredTitle;
-                log('- Title inferred from direct URL lookup');
-            }
-            const inferredDuration =
-                (Number.isFinite(directInfo?.durationSec) ? directInfo.durationSec : null)
-                || parseDurationFromDirectUrl(resolvedDirectUrl);
-            if (inferredDuration && (currentDurationSec == null || !Number.isFinite(currentDurationSec) || currentDurationSec <= 0)) {
-                currentDurationSec = inferredDuration;
-                currentDurationLabel = directInfo?.durationLabel || formatDuration(inferredDuration);
-                log(`- Duration inferred from direct URL (${inferredDuration}s)`);
-            }
-            log(`- Direct URL prefetched (${elapsedMs}ms)`);
-            if (activeStreamCount === 0 && lastPlayback?.deviceHost && lastPlayback.startedAt >= playbackStartedAt) {
-                log('- Direct URL ready while idle, forcing restart');
-                scheduleRestart('direct URL ready', { force: true });
-            }
-        })
-        .catch((err) => log(`[WARN] Direct URL prefetch failed: ${err.message}`));
-
-    const coordinatorHost = await resolveCoordinatorHost(deviceHost);
-    assertStillLatest();
-    if (coordinatorHost !== deviceHost) {
-        log(`- Coordinator resolved: ${deviceHost} -> ${coordinatorHost}`);
-    }
-    const device = new Sonos(coordinatorHost);
-    try {
-        await withRetry(() => device.stop(), { label: 'Preflight stop', attempts: 2, baseDelay: 300 });
-    } catch (err) {
-        log(`[WARN] Preflight stop failed: ${err.message}`);
-    }
-    assertStillLatest();
-    const cookieFlag = YT_COOKIES ? ` --cookies "${YT_COOKIES}"` : '';
-    const jsRuntimeFlag = ` --js-runtimes "${YT_JS_RUNTIME}"`;
-    const ipv4Flag = YT_FORCE_IPV4 ? ' -4' : '';
     const fallbackTitle = typeof fallbackMeta?.title === 'string' ? fallbackMeta.title.trim() : '';
     const fallbackDurationSec = Number.isFinite(fallbackMeta?.durationSec) ? Number(fallbackMeta.durationSec) : null;
     const fallbackDurationLabel = typeof fallbackMeta?.durationLabel === 'string' ? fallbackMeta.durationLabel.trim() : '';
@@ -1184,10 +1669,23 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     let durationLabel = fallbackDurationLabel || (durationSec != null ? formatDuration(durationSec) : null);
     let metadataProbeFailed = false;
     const probeMetadata = async (timeoutMs) => {
-        const { stdout } = await execPromise(
-            `yt-dlp --no-config --no-warnings --no-playlist${cookieFlag}${jsRuntimeFlag}${ipv4Flag} --extractor-args "${YT_EXTRACTOR_ARGS}" --user-agent "${YT_USER_AGENT}" --print "%(title)s" --print "%(thumbnail)s" --print "%(duration)s" --print "%(duration_string)s" "${normalizedUrl}"`,
-            { maxBuffer: 1024 * 1024, timeout: timeoutMs }
+        const args = ['--no-config', '--no-warnings', '--no-playlist'];
+        if (YT_COOKIES) args.push('--cookies', YT_COOKIES);
+        if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+        if (YT_FORCE_IPV4) args.push('-4');
+        args.push(
+            '--extractor-args', YT_EXTRACTOR_ARGS,
+            '--user-agent', YT_USER_AGENT,
+            '--print', '%(title)s',
+            '--print', '%(thumbnail)s',
+            '--print', '%(duration)s',
+            '--print', '%(duration_string)s',
+            normalizedUrl
         );
+        const { stdout } = await execBinary('yt-dlp', args, {
+            maxBuffer: 1024 * 1024,
+            timeout: timeoutMs
+        });
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
         const parsedDuration = Number(lines[2]);
         const parsedDurationSec = Number.isFinite(parsedDuration)
@@ -1213,17 +1711,12 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     }
     assertStillLatest();
 
-    currentTitle = title;
-    currentDurationSec = durationSec;
-    currentDurationLabel = durationLabel;
-    if (metadataProbeFailed && (!fallbackTitle || isGenericPlaybackTitle(currentTitle))) {
+    if (metadataProbeFailed && (!fallbackTitle || isGenericPlaybackTitle(title))) {
         void resolveTitleFallback(normalizedUrl).then((resolved) => {
             if (!resolved) return;
-            if (startToken !== playbackStartToken || currentYoutubeUrl !== normalizedUrl) return;
-            if (isGenericPlaybackTitle(currentTitle)) {
-                currentTitle = resolved.title;
-                log(`- Metadata title refreshed via ${resolved.source}`);
-            }
+            if (startToken !== playbackStartToken) return;
+            title = resolved.title;
+            log(`- Metadata title refreshed via ${resolved.source}`);
         });
     }
     if (metadataProbeFailed && (!fallbackTitle || durationSec == null)) {
@@ -1251,33 +1744,55 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
             }
         })();
     }
-    const normalizedTitle = truncate(normalizeTitle(title), 120);
-    const asciiTitle = truncate(toAscii(title) || 'Sonons Stream', 120);
+
+    const mediaToken = crypto.randomUUID();
+    const downloadedFile = await downloadAudioFile(normalizedUrl, mediaToken);
+    assertStillLatest();
+    resetMediaState({ keepPaths: [downloadedFile] });
+    currentMediaFile = downloadedFile;
+    currentMediaToken = mediaToken;
+    currentYoutubeUrl = normalizedUrl;
+    currentTitle = title;
+    currentDurationSec = durationSec;
+    currentDurationLabel = durationLabel;
+    currentDirectUrl = '';
+    currentDirectUrlAt = 0;
+    currentDirectUrlFor = '';
+    currentDirectUrlPromise = null;
+    currentDirectUrlPromiseFor = '';
+
+    const coordinatorHost = await resolveCoordinatorHost(deviceHost);
+    assertStillLatest();
+    if (coordinatorHost !== deviceHost) {
+        log(`- Coordinator resolved: ${deviceHost} -> ${coordinatorHost}`);
+    }
+    const device = new Sonos(coordinatorHost);
+    try {
+        await withRetry(() => device.stop(), { label: 'Preflight stop', attempts: 2, baseDelay: 300 });
+    } catch (err) {
+        log(`[WARN] Preflight stop failed: ${err.message}`);
+    }
+    assertStillLatest();
+    currentPlaybackState = 'stopped';
+    activeStreamCount = 0;
+
+    const normalizedTitle = truncate(normalizeTitle(currentTitle), 120);
+    const asciiTitle = truncate(toAscii(currentTitle) || 'Sonons Audio', 120);
     const safeTitle = escapeXml(normalizedTitle);
     const safeAsciiTitle = escapeXml(asciiTitle);
+    const mediaUri = `http://${HOST_IP}:${PORT}/media/${currentMediaToken}.mp3`;
 
-    // 2. CLEAN URI - No query params, looks like a static file
-    // We use x-rincon-mp3radio for best "Stream" compatibility
-    const streamHost = `${HOST_IP}:${PORT}`;
-    const streamPath = `${streamHost}/sonons.mp3`;
-    const uriMp3Radio = `x-rincon-mp3radio://${streamPath}`;
-    const uriHttp = `http://${streamPath}`;
+    log(`- Title: ${currentTitle}`);
+    log(`- Downloaded media: ${downloadedFile}`);
+    log(`- Primary URI: ${mediaUri}`);
 
-    log(`- Title: ${title}`);
-    log(`- Primary URI: ${uriMp3Radio}`);
-
-    // 3. MINIMAL METADATA
-    // Sometimes less is more. We use a generic radio metadata block.
     const buildMetadata = (titleValue) =>
-        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
+        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
 
     const candidates = [
-        { label: 'x-rincon-mp3radio + meta', uri: uriMp3Radio, metadata: buildMetadata(safeTitle) },
-        { label: 'x-rincon-mp3radio + ascii-meta', uri: uriMp3Radio, metadata: buildMetadata(safeAsciiTitle) },
-        { label: 'x-rincon-mp3radio + empty', uri: uriMp3Radio, metadata: '' },
-        { label: 'http + meta', uri: uriHttp, metadata: buildMetadata(safeTitle) },
-        { label: 'http + ascii-meta', uri: uriHttp, metadata: buildMetadata(safeAsciiTitle) },
-        { label: 'http + empty', uri: uriHttp, metadata: '' }
+        { label: 'http file + meta', uri: mediaUri, metadata: buildMetadata(safeTitle) },
+        { label: 'http file + ascii-meta', uri: mediaUri, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'http file + empty', uri: mediaUri, metadata: '' }
     ];
 
     let lastError;
@@ -1300,12 +1815,15 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
                 metadata: option.metadata,
                 startedAt: Date.now()
             };
+            currentPlaybackState = 'playing';
+            activeStreamCount = 1;
             restartAttempts = 0;
             if (restartTimer) {
                 clearTimeout(restartTimer);
                 restartTimer = null;
             }
-            return { title, art };
+            startPlaybackMonitor();
+            return { title: currentTitle, art };
         } catch (err) {
             if (isPlaybackSupersededError(err)) {
                 throw err;
@@ -1317,12 +1835,100 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
 
     throw lastError || new Error('All AVTransport candidates failed');
 };
+const startUploadedPlayback = async (deviceHost, item) => {
+    const startToken = ++playbackStartToken;
+    const assertStillLatest = () => {
+        if (startToken !== playbackStartToken) {
+            throw createPlaybackSupersededError();
+        }
+    };
+    const filePath = getLibraryItemPath(item);
+    if (!fs.existsSync(filePath)) {
+        throw new Error('Uploaded file is missing on disk');
+    }
+    const title = item.title || sanitizeLibraryTitle(item.originalName);
+    currentMediaFile = filePath;
+    currentMediaToken = item.id;
+    currentYoutubeUrl = '';
+    currentTitle = title;
+    currentDurationSec = Number.isFinite(item.durationSec) ? item.durationSec : null;
+    currentDurationLabel = item.durationLabel || (currentDurationSec != null ? formatDuration(currentDurationSec) : null);
+    currentSourceType = 'upload';
+    currentLibraryItemId = item.id;
+    currentDirectUrl = '';
+    currentDirectUrlAt = 0;
+    currentDirectUrlFor = '';
+    currentDirectUrlPromise = null;
+    currentDirectUrlPromiseFor = '';
+
+    const coordinatorHost = await resolveCoordinatorHost(deviceHost);
+    assertStillLatest();
+    const device = new Sonos(coordinatorHost);
+    try {
+        await withRetry(() => device.stop(), { label: 'Preflight stop', attempts: 2, baseDelay: 300 });
+    } catch (err) {
+        log(`[WARN] Preflight stop failed: ${err.message}`);
+    }
+    assertStillLatest();
+    currentPlaybackState = 'stopped';
+    activeStreamCount = 0;
+
+    const normalizedTitle = truncate(normalizeTitle(currentTitle), 120);
+    const asciiTitle = truncate(toAscii(currentTitle) || 'Uploaded Track', 120);
+    const safeTitle = escapeXml(normalizedTitle);
+    const safeAsciiTitle = escapeXml(asciiTitle);
+    const mediaUri = `http://${HOST_IP}:${PORT}/uploads/${encodeURIComponent(item.storedName)}`;
+    const buildMetadata = (titleValue) =>
+        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
+    const candidates = [
+        { label: 'upload + meta', uri: mediaUri, metadata: buildMetadata(safeTitle) },
+        { label: 'upload + ascii-meta', uri: mediaUri, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'upload + empty', uri: mediaUri, metadata: '' }
+    ];
+    let lastError;
+    for (const option of candidates) {
+        assertStillLatest();
+        try {
+            log(`- Trying AVTransport: ${option.label}`);
+            await withRetry(
+                () => device.setAVTransportURI({ uri: option.uri, metadata: option.metadata, onlySetUri: true }),
+                { label: `Set AVTransport (${option.label})`, attempts: 3, baseDelay: 400 }
+            );
+            assertStillLatest();
+            await withRetry(() => device.play(), { label: 'Play upload', attempts: 3, baseDelay: 400 });
+            assertStillLatest();
+            lastPlayback = {
+                deviceHost: coordinatorHost,
+                uri: option.uri,
+                metadata: option.metadata,
+                startedAt: Date.now()
+            };
+            currentPlaybackState = 'playing';
+            activeStreamCount = 1;
+            restartAttempts = 0;
+            if (restartTimer) {
+                clearTimeout(restartTimer);
+                restartTimer = null;
+            }
+            startPlaybackMonitor();
+            log(`[SUCCESS] Uploaded file accepted: ${option.label}`);
+            return { title: currentTitle };
+        } catch (err) {
+            if (isPlaybackSupersededError(err)) throw err;
+            lastError = err;
+            log(`- Failed: ${option.label} -> ${err.message}`);
+        }
+    }
+    throw lastError || new Error('All upload playback candidates failed');
+};
 
 // Play (YouTube)
 app.post('/play', async (req, res) => {
     const { deviceHost, youtubeUrl } = req.body;
     try {
         playlistMode = false;
+        currentSourceType = 'idle';
+        currentLibraryItemId = null;
         const { title } = await startPlayback(deviceHost, youtubeUrl);
         res.send({ status: 'playing', title });
     } catch (e) {
@@ -1362,8 +1968,11 @@ app.post('/pause', async (req, res) => {
         const device = new Sonos(host);
         await withRetry(() => device.pause(), { label: 'Pause', attempts: 2, baseDelay: 300 });
         playlistMode = false;
+        currentPlaybackState = 'paused';
+        activeStreamCount = 0;
         restartAttempts = 0;
         lastPlayback = null;
+        stopPlaybackMonitor();
         res.send({ status: 'paused' });
     } catch (e) {
         log(`[ERR] Pause: ${e.message}`);
@@ -1396,8 +2005,11 @@ app.get('/status', (req, res) => {
     res.json({
         title: currentTitle || null,
         youtubeUrl: currentYoutubeUrl || null,
-        isPlaying: !!currentYoutubeUrl && activeStreamCount > 0,
-        activeStreams: activeStreamCount,
+        isPlaying: currentPlaybackState === 'playing',
+        activeStreams: currentPlaybackState === 'playing' ? 1 : 0,
+        playbackState: currentPlaybackState,
+        sourceType: currentSourceType,
+        libraryItemId: currentLibraryItemId,
         startedAt: lastPlayback?.startedAt || null,
         deviceHost: lastPlayback?.deviceHost || null,
         durationSec: currentDurationSec,
@@ -1411,222 +2023,15 @@ app.get('/status', (req, res) => {
     });
 });
 
-// THE CLEAN ENDPOINT
-app.get('/sonons.mp3', async (req, res) => {
-    log(`SPEAKER CONNECTED to /sonons.mp3`);
-
-    if (!currentYoutubeUrl) {
-        log('No active URL set, closing connection.');
-        res.end();
+app.get('/sonons.mp3', (req, res) => {
+    if (!currentMediaFile || !fs.existsSync(currentMediaFile)) {
+        res.status(404).send('No downloaded media');
         return;
     }
-
-    if (restartTimer) {
-        clearTimeout(restartTimer);
-        restartTimer = null;
-        log('- Pending restart canceled (stream reconnected)');
-    }
-    restartAttempts = 0;
-
-    activeStreamCount += 1;
-    const streamToken = playbackStartToken;
-    let closed = false;
-    let endedNaturally = false;
-    const markClosed = () => {
-        if (closed) return;
-        closed = true;
-        activeStreamCount = Math.max(0, activeStreamCount - 1);
-    };
-
-    // Impersonate a standard MP3 file/stream
-    const headerTitle = String(currentTitle || 'Sonons Stream')
-        .replace(/[\r\n]+/g, ' ')
-        .replace(/[^\x20-\x7E]/g, '')
-        .trim() || 'Sonons Stream';
-    res.header('Content-Type', 'audio/mpeg');
-    res.header('ice-name', headerTitle);
-    res.header('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.header('Pragma', 'no-cache');
-    res.header('Expires', '0');
-    res.header('Connection', 'keep-alive');
-    res.header('Transfer-Encoding', 'chunked');
-    res.header('Accept-Ranges', 'none');
-    res.flushHeaders();
-    if (res.socket) {
-        res.socket.setKeepAlive(true, 15000);
-        res.socket.setNoDelay(true);
-        res.socket.setTimeout(0);
-    }
-
-    const hasFreshDirectUrl =
-        currentDirectUrlFor === currentYoutubeUrl
-        && currentDirectUrl
-        && (Date.now() - currentDirectUrlAt < DIRECT_URL_TTL_MS);
-    let directUrl = '';
-    if (hasFreshDirectUrl) {
-        directUrl = currentDirectUrl;
-        log('- Stream source: direct URL cache');
-    } else {
-        const waitMs = Math.max(0, YT_DIRECT_URL_WAIT_MS);
-        if (waitMs > 0) {
-            const startedAt = Date.now();
-            const pendingDirectInfo = resolveDirectUrl(currentYoutubeUrl);
-            pendingDirectInfo.catch(() => { });
-            try {
-                directUrl = await Promise.race([
-                    pendingDirectInfo.then((info) => info.url),
-                    new Promise((_, reject) => {
-                        setTimeout(() => reject(new Error('direct-url-timeout')), waitMs);
-                    })
-                ]);
-                log(`- Stream source: direct URL wait-hit (${Date.now() - startedAt}ms)`);
-            } catch (err) {
-                const msg = String(err?.message || err);
-                if (msg.includes('direct-url-timeout')) {
-                    log(`- Stream source: yt-dlp pipe (direct URL wait timeout ${waitMs}ms)`);
-                } else {
-                    log(`[WARN] Direct URL wait failed: ${msg}`);
-                    log('- Stream source: yt-dlp pipe');
-                }
-            }
-        } else {
-            log('- Stream source: yt-dlp pipe');
-        }
-    }
-
-    const ffArgs = directUrl
-        ? [
-            '-hide_banner',
-            '-loglevel', 'error',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '3',
-            '-reconnect_at_eof', '1',
-            '-user_agent', YT_USER_AGENT,
-            '-headers', 'Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n',
-            '-fflags', '+nobuffer',
-            '-analyzeduration', '0',
-            '-probesize', '32k',
-            '-i', directUrl,
-            '-vn', '-sn', '-dn',
-            '-acodec', 'libmp3lame',
-            '-b:a', '192k',
-            '-f', 'mp3',
-            '-flush_packets', '1',
-            'pipe:1'
-        ]
-        : [
-            '-hide_banner',
-            '-loglevel', 'error',
-            '-thread_queue_size', '4096',
-            '-analyzeduration', '10M',
-            '-probesize', '5M',
-            '-fflags', '+discardcorrupt',
-            '-err_detect', 'ignore_err',
-            '-i', 'pipe:0',
-            '-vn', '-sn', '-dn',
-            '-acodec', 'libmp3lame',
-            '-b:a', '192k',
-            '-f', 'mp3',
-            '-flush_packets', '1',
-            'pipe:1'
-        ];
-    const ff = spawn('ffmpeg', ffArgs);
-    let yt = null;
-    let ytErr = '';
-
-    if (!directUrl) {
-        const ytArgs = ['--no-config', '--no-warnings', '--no-playlist', '--no-progress'];
-        if (YT_COOKIES) ytArgs.push('--cookies', YT_COOKIES);
-        if (YT_JS_RUNTIME) ytArgs.push('--js-runtimes', YT_JS_RUNTIME);
-        if (YT_FORCE_IPV4) ytArgs.push('-4');
-        ytArgs.push('--extractor-args', YT_EXTRACTOR_ARGS);
-        if (YT_USER_AGENT) ytArgs.push('--user-agent', YT_USER_AGENT);
-        ytArgs.push(
-            '-f', '140/251/250/249/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/18/best',
-            '-o', '-',
-            currentYoutubeUrl
-        );
-        yt = spawn('yt-dlp', ytArgs);
-        yt.stderr.on('data', (chunk) => {
-            if (ytErr.length < 2000) ytErr += chunk.toString();
-        });
-        yt.on('error', (e) => log(`YT Error: ${e.message}`));
-        yt.on('close', (code, signal) => {
-            log(`YT Exit: code=${code ?? 'null'} signal=${signal ?? 'null'}`);
-            if (ytErr) log(`YT Stderr: ${ytErr.replace(/\s+/g, ' ').trim()}`);
-        });
-        yt.stdout.on('error', (e) => {
-            if (isEpipe(e)) return;
-            log(`YT stdout error: ${e.message}`);
-        });
-        ff.stdin.on('error', (e) => {
-            if (isEpipe(e)) return;
-            log(`FF stdin error: ${e.message}`);
-        });
-        yt.stdout.pipe(ff.stdin);
-    }
-
-    let ffErr = '';
-    ff.stderr.on('data', (chunk) => {
-        if (ffErr.length < 2000) ffErr += chunk.toString();
-    });
-
-    ff.stdout.pipe(res);
-
-    req.on('close', () => {
-        log(`STREAM CLOSED.`);
-        markClosed();
-        if (yt && !yt.killed) yt.kill();
-        if (!ff.killed) ff.kill();
-        setTimeout(() => {
-            if (streamToken !== playbackStartToken) return;
-            if (endedNaturally) return;
-            if (activeStreamCount > 0) return;
-            scheduleRestart('client closed');
-        }, 300);
-    });
-
-    res.on('error', (e) => {
-        if (isEpipe(e)) {
-            log(`STREAM EPIPE (client closed).`);
-            markClosed();
-            if (yt && !yt.killed) yt.kill();
-            if (!ff.killed) ff.kill();
-            return;
-        }
-        log(`RES Error: ${e.message}`);
-    });
-    ff.stdout.on('error', (e) => {
-        if (isEpipe(e)) {
-            log(`FF stdout EPIPE (client closed).`);
-            return;
-        }
-        log(`FF stdout error: ${e.message}`);
-    });
-    ff.on('error', (e) => log(`FF Error: ${e.message}`));
-    ff.on('close', (code, signal) => {
-        log(`FF Exit: code=${code ?? 'null'} signal=${signal ?? 'null'}`);
-        if (ffErr) log(`FF Stderr: ${ffErr.replace(/\s+/g, ' ').trim()}`);
-        if (yt && !yt.killed) yt.kill();
-        if (code === 0) {
-            endedNaturally = true;
-            if (playlistMode) {
-                setTimeout(() => {
-                    if (streamToken !== playbackStartToken) return;
-                    if (activeStreamCount === 0) {
-                        advancePlaylist(lastPlayback?.deviceHost);
-                    }
-                }, 400);
-            }
-        }
-        // Keep cached direct URL on client disconnect; only clear on real stream failures.
-        if (code && code !== 0 && !closed) {
-            currentDirectUrl = '';
-            currentDirectUrlAt = 0;
-            currentDirectUrlFor = '';
-        }
-    });
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.sendFile(currentMediaFile);
 });
 
 app.listen(PORT, '0.0.0.0', () => {

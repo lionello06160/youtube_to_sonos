@@ -16,3 +16,15 @@ export interface PlaylistTrack {
     durationSec: number | null;
     durationLabel: string | null;
 }
+
+export interface LibraryTrack {
+    id: string;
+    title: string;
+    originalName: string;
+    storedName: string;
+    mimeType: string;
+    size: number;
+    durationSec: number | null;
+    durationLabel: string | null;
+    uploadedAt: string;
+}

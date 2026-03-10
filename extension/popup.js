@@ -73,6 +73,13 @@ const showToast = (message) => {
   }, 2500);
 };
 
+const getErrorMessage = (err, fallback) => {
+  if (err instanceof Error && err.message.trim()) {
+    return err.message.trim();
+  }
+  return fallback;
+};
+
 const request = async (path, options) => {
   const res = await fetch(`${apiUrl}${path}`, options);
   if (!res.ok) {
@@ -146,8 +153,8 @@ const renderDevices = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ host: device.host, volume: value })
         });
-      } catch {
-        showToast('Volume update failed');
+      } catch (err) {
+        showToast(getErrorMessage(err, 'Volume update failed'));
       }
     });
 
@@ -162,7 +169,7 @@ const fetchDevices = async () => {
     selectedHosts = devices.map((d) => d.host);
     renderDevices();
   } catch (err) {
-    showToast('Scan failed');
+    showToast(getErrorMessage(err, 'Scan failed'));
   }
 };
 
@@ -203,8 +210,8 @@ const play = async () => {
     saveLastUrl(youtubeUrl.value);
     showToast('Broadcast started');
     fetchStatus();
-  } catch {
-    showToast('Playback failed');
+  } catch (err) {
+    showToast(getErrorMessage(err, 'Playback failed'));
   }
 };
 
@@ -218,8 +225,8 @@ const stop = async () => {
     });
     showToast('Stopped');
     fetchStatus();
-  } catch {
-    showToast('Stop failed');
+  } catch (err) {
+    showToast(getErrorMessage(err, 'Stop failed'));
   }
 };
 
