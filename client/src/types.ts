@@ -6,17 +6,6 @@ export interface Device {
     volume: number;
 }
 
-export type LoopMode = 'all' | 'single' | 'shuffle';
-
-export interface PlaylistTrack {
-    uid: string;
-    id: string;
-    url: string;
-    title: string;
-    durationSec: number | null;
-    durationLabel: string | null;
-}
-
 export interface LibraryTrack {
     id: string;
     title: string;
@@ -27,4 +16,20 @@ export interface LibraryTrack {
     durationSec: number | null;
     durationLabel: string | null;
     uploadedAt: string;
+}
+
+export interface PlaybackStatus {
+    title: string | null;
+    isPlaying: boolean;
+    activeStreams: number;
+    startedAt: number | null;
+    positionSec: number | null;
+    positionUpdatedAt: number | null;
+    durationSec: number | null;
+    durationLabel: string | null;
+    playbackState?: string | null;
+    sourceType?: string | null;
+    libraryItemId?: string | null;
+    autoStopTime?: string | null;
+    autoShutdownTime?: string | null;
 }

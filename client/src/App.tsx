@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import axios from 'axios';
-import type { Device, LibraryTrack } from './types';
+import type { Device, LibraryTrack, PlaybackStatus } from './types';
 
 const API_URL = `http://${window.location.hostname}:3005`;
 
@@ -133,20 +133,8 @@ function App() {
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [libraryDeleteBusyId, setLibraryDeleteBusyId] = useState<string | null>(null);
   const [isUploadHover, setIsUploadHover] = useState(false);
-  const [nowPlaying, setNowPlaying] = useState<{
-    title: string | null;
-    isPlaying: boolean;
-    activeStreams: number;
-    startedAt: number | null;
-    durationSec: number | null;
-    durationLabel: string | null;
-    playbackState?: string | null;
-    sourceType?: string | null;
-    libraryItemId?: string | null;
-    autoStopTime?: string | null;
-    autoShutdownTime?: string | null;
-  } | null>(null);
-  const [tick, setTick] = useState(0);
+  const [nowPlaying, setNowPlaying] = useState<PlaybackStatus | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [actionBusy, setActionBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -215,7 +203,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -230,6 +218,12 @@ function App() {
 
   const toggleSelect = (host: string) => {
     setSelectedHosts((prev) => prev.includes(host) ? prev.filter((h) => h !== host) : [...prev, host]);
+  };
+  const handleDeviceCardKeyDown = (event: KeyboardEvent<HTMLDivElement>, host: string) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggleSelect(host);
   };
 
   const selectAll = () => setSelectedHosts(devices.map((d) => d.host));
@@ -251,7 +245,16 @@ function App() {
     setActionBusy(true);
     try {
       await axios.post(`${API_URL}/stop`, { deviceHost: selectedHosts[0] });
-      setNowPlaying((prev) => prev ? { ...prev, isPlaying: false, title: null, playbackState: 'stopped' } : prev);
+      setNowPlaying((prev) => prev ? {
+        ...prev,
+        isPlaying: false,
+        title: null,
+        playbackState: 'stopped',
+        sourceType: 'idle',
+        libraryItemId: null,
+        positionSec: 0,
+        positionUpdatedAt: Date.now()
+      } : prev);
       showToast('Stopped');
     } catch (err: unknown) {
       showToast(getRequestErrorMessage(err, 'Stop failed'));
@@ -316,6 +319,8 @@ function App() {
         isPlaying: true,
         activeStreams: 1,
         startedAt: Date.now(),
+        positionSec: 0,
+        positionUpdatedAt: Date.now(),
         durationSec: item.durationSec,
         durationLabel: item.durationLabel,
         playbackState: 'playing',
@@ -364,15 +369,21 @@ function App() {
   }, [libraryTracks, nowPlaying?.libraryItemId]);
 
   const progress = useMemo(() => {
-    if (!nowPlaying?.startedAt) return null;
-    const elapsed = Math.max(0, Math.floor((Date.now() - nowPlaying.startedAt) / 1000));
+    if (!nowPlaying || nowPlaying.sourceType === 'idle') return null;
+    const basePosition = typeof nowPlaying.positionSec === 'number' && Number.isFinite(nowPlaying.positionSec)
+      ? Math.max(0, Math.floor(nowPlaying.positionSec))
+      : 0;
+    const driftSec = nowPlaying.playbackState === 'playing' && nowPlaying.positionUpdatedAt
+      ? Math.max(0, Math.floor((nowMs - nowPlaying.positionUpdatedAt) / 1000))
+      : 0;
     const duration =
       typeof nowPlaying.durationSec === 'number' && Number.isFinite(nowPlaying.durationSec) && nowPlaying.durationSec > 0
         ? nowPlaying.durationSec
         : null;
+    const elapsed = duration != null ? Math.min(duration, basePosition + driftSec) : basePosition + driftSec;
     const percent = duration ? Math.min(100, (elapsed / duration) * 100) : null;
     return { elapsed, duration, percent };
-  }, [nowPlaying?.startedAt, nowPlaying?.durationSec, tick]);
+  }, [nowMs, nowPlaying]);
 
   return (
     <div className="font-display min-h-screen flex bg-background-dark text-white">
@@ -450,6 +461,11 @@ function App() {
                     <div
                       key={device.host}
                       onClick={() => toggleSelect(device.host)}
+                      onKeyDown={(event) => handleDeviceCardKeyDown(event, device.host)}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isSelected}
+                      aria-label={`${isSelected ? 'Deselect' : 'Select'} ${device.name}`}
                       className={`device-card glass p-5 rounded-2xl relative cursor-pointer transition-all ${isSelected ? 'neon-border-primary' : 'border-white/10 hover:border-white/20'} ${isSelected && nowPlaying?.isPlaying ? 'playing-glow' : ''}`}
                     >
                       {isSelected && (
@@ -487,6 +503,7 @@ function App() {
                           min="0"
                           max="100"
                           value={device.volume}
+                          aria-label={`${device.name} volume`}
                           style={{ '--volume': `${device.volume}%` } as React.CSSProperties}
                           onChange={(e) => void handleVolumeChange(device.host, Number(e.target.value))}
                         />
@@ -600,6 +617,8 @@ function App() {
                                     <button
                                       onClick={() => void handleLibraryPlay(track)}
                                       disabled={actionBusy || selectedHosts.length === 0 || isDeleteBusy}
+                                      aria-label={`Play ${track.title}`}
+                                      title={`Play ${track.title}`}
                                       className="playlist-action-btn px-4 py-2 rounded-lg bg-emerald-500/15 border border-emerald-400/30 text-emerald-200 text-xs font-bold uppercase tracking-widest hover:bg-emerald-500/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                       <span className={`material-symbols-outlined text-[18px] ${isPlayBusy ? 'animate-spin' : ''}`}>
@@ -609,6 +628,8 @@ function App() {
                                     <button
                                       onClick={() => void handleLibraryDelete(track)}
                                       disabled={actionBusy || isPlayBusy || isDeleteBusy}
+                                      aria-label={`Delete ${track.title}`}
+                                      title={`Delete ${track.title}`}
                                       className="playlist-action-btn playlist-action-btn-danger px-3 py-2 rounded-lg border border-rose-500/30 text-rose-200 text-xs font-bold uppercase tracking-widest hover:bg-rose-500/10 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
                                       <span className={`material-symbols-outlined text-[18px] ${isDeleteBusy ? 'animate-spin' : ''}`}>

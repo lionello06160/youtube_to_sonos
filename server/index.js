@@ -69,6 +69,8 @@ let activeStreamCount = 0;
 let currentMediaFile = '';
 let currentMediaToken = '';
 let currentPlaybackState = 'stopped';
+let currentPlaybackPositionSec = 0;
+let currentPlaybackPositionUpdatedAt = 0;
 let currentSourceType = 'idle';
 let currentLibraryItemId = null;
 let playbackMonitorTimer = null;
@@ -111,6 +113,13 @@ const parseTime = (value) => {
 };
 const formatTimeParts = (hour, minute) =>
     `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+const clampPlaybackPosition = (positionSec, durationSec) => {
+    const nextPosition = Number.isFinite(positionSec) ? Math.max(0, Math.floor(positionSec)) : 0;
+    if (!Number.isFinite(durationSec) || durationSec <= 0) {
+        return nextPosition;
+    }
+    return Math.min(nextPosition, Math.max(0, Math.floor(durationSec)));
+};
 const getEffectiveStopTime = () => {
     const parsed = parseTime(autoConfig.autoStopTime);
     if (parsed) return formatTimeParts(parsed.hour, parsed.minute);
@@ -315,6 +324,24 @@ const probeAudioDuration = async (filePath) => {
         log(`[WARN] Failed to probe duration for ${path.basename(filePath)}: ${err.message}`);
         return null;
     }
+};
+const syncPlaybackProgress = (track = {}) => {
+    const trackPosition = Number.isFinite(track.position) ? track.position : 0;
+    const trackDuration = Number.isFinite(track.duration) && track.duration > 0 ? Math.floor(track.duration) : null;
+    if (trackDuration != null) {
+        currentDurationSec = trackDuration;
+        currentDurationLabel = formatDuration(trackDuration);
+    }
+    currentPlaybackPositionSec = clampPlaybackPosition(trackPosition, trackDuration ?? currentDurationSec);
+    currentPlaybackPositionUpdatedAt = Date.now();
+};
+const getEffectivePlaybackPositionSec = () => {
+    const basePosition = Number.isFinite(currentPlaybackPositionSec) ? currentPlaybackPositionSec : 0;
+    if (currentPlaybackState !== 'playing' || !currentPlaybackPositionUpdatedAt) {
+        return clampPlaybackPosition(basePosition, currentDurationSec);
+    }
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - currentPlaybackPositionUpdatedAt) / 1000));
+    return clampPlaybackPosition(basePosition + elapsedSec, currentDurationSec);
 };
 const ensureLibraryDurations = async () => {
     let changed = false;
@@ -1101,6 +1128,14 @@ const startPlaybackMonitor = () => {
             const device = new Sonos(lastPlayback.deviceHost);
             const nextState = String(await device.getCurrentState() || 'stopped').toLowerCase();
             currentPlaybackState = nextState;
+            if (nextState === 'playing' || nextState === 'paused') {
+                try {
+                    const track = await device.currentTrack();
+                    syncPlaybackProgress(track);
+                } catch (trackErr) {
+                    log(`[WARN] Playback progress refresh failed: ${trackErr.message}`);
+                }
+            }
             if (nextState !== previousState) {
                 log(`- Playback state: ${previousState} -> ${nextState}`);
             }
@@ -1188,6 +1223,8 @@ const resetPlaybackState = () => {
     currentDirectUrlPromiseFor = '';
     activeStreamCount = 0;
     currentPlaybackState = 'stopped';
+    currentPlaybackPositionSec = 0;
+    currentPlaybackPositionUpdatedAt = 0;
     currentSourceType = 'idle';
     currentLibraryItemId = null;
     restartAttempts = 0;
@@ -1755,6 +1792,8 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     currentDirectUrlFor = '';
     currentDirectUrlPromise = null;
     currentDirectUrlPromiseFor = '';
+    currentPlaybackPositionSec = 0;
+    currentPlaybackPositionUpdatedAt = Date.now();
 
     const coordinatorHost = await resolveCoordinatorHost(deviceHost);
     assertStillLatest();
@@ -1811,6 +1850,8 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
                 startedAt: Date.now()
             };
             currentPlaybackState = 'playing';
+            currentPlaybackPositionSec = 0;
+            currentPlaybackPositionUpdatedAt = Date.now();
             activeStreamCount = 1;
             restartAttempts = 0;
             if (restartTimer) {
@@ -1855,6 +1896,8 @@ const startUploadedPlayback = async (deviceHost, item) => {
     currentDirectUrlFor = '';
     currentDirectUrlPromise = null;
     currentDirectUrlPromiseFor = '';
+    currentPlaybackPositionSec = 0;
+    currentPlaybackPositionUpdatedAt = Date.now();
 
     const coordinatorHost = await resolveCoordinatorHost(deviceHost);
     assertStillLatest();
@@ -1899,6 +1942,8 @@ const startUploadedPlayback = async (deviceHost, item) => {
                 startedAt: Date.now()
             };
             currentPlaybackState = 'playing';
+            currentPlaybackPositionSec = 0;
+            currentPlaybackPositionUpdatedAt = Date.now();
             activeStreamCount = 1;
             restartAttempts = 0;
             if (restartTimer) {
@@ -1964,6 +2009,7 @@ app.post('/pause', async (req, res) => {
         await withRetry(() => device.pause(), { label: 'Pause', attempts: 2, baseDelay: 300 });
         playlistMode = false;
         currentPlaybackState = 'paused';
+        currentPlaybackPositionUpdatedAt = Date.now();
         activeStreamCount = 0;
         restartAttempts = 0;
         lastPlayback = null;
@@ -1997,6 +2043,7 @@ app.post('/stop', async (req, res) => {
 
 // Status
 app.get('/status', (req, res) => {
+    const positionSec = getEffectivePlaybackPositionSec();
     res.json({
         title: currentTitle || null,
         youtubeUrl: currentYoutubeUrl || null,
@@ -2006,6 +2053,8 @@ app.get('/status', (req, res) => {
         sourceType: currentSourceType,
         libraryItemId: currentLibraryItemId,
         startedAt: lastPlayback?.startedAt || null,
+        positionSec,
+        positionUpdatedAt: currentPlaybackPositionUpdatedAt || null,
         deviceHost: lastPlayback?.deviceHost || null,
         durationSec: currentDurationSec,
         durationLabel: currentDurationLabel,

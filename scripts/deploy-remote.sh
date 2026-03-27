@@ -124,20 +124,55 @@ set -euo pipefail
 cd "${REMOTE_DIR:-/home/lionel/apps/youtube_to_sonos}"
 
 restart_with_systemctl() {
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -ti tcp:3005 2>/dev/null || true)"
+    [[ -n "${pids:-}" ]] && kill $pids 2>/dev/null || true
+    pids="$(lsof -ti tcp:4173 2>/dev/null || true)"
+    [[ -n "${pids:-}" ]] && kill $pids 2>/dev/null || true
+  fi
+  pkill -f 'node index.js' 2>/dev/null || true
+  pkill -f 'npm start' 2>/dev/null || true
+  pkill -f 'serve -s dist -l 4173' 2>/dev/null || true
+  pkill -f 'vite --host 0.0.0.0 --port 5173' 2>/dev/null || true
+  sleep 1
   sudo systemctl restart sonons.service
   sudo systemctl restart sonons-client.service
   echo 'systemctl: restarted sonons + sonons-client'
 }
 
 restart_with_nohup() {
+  kill_port_listeners() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+      local pids
+      pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
+      if [[ -n "$pids" ]]; then
+        kill $pids 2>/dev/null || true
+        sleep 1
+        pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
+        if [[ -n "$pids" ]]; then
+          kill -9 $pids 2>/dev/null || true
+        fi
+      fi
+    fi
+  }
+
+  stop_matching_processes() {
+    local pattern="$1"
+    pkill -f "$pattern" 2>/dev/null || true
+  }
+
   cd server
-  pkill -f 'node index.js' || true
+  kill_port_listeners 3005
+  stop_matching_processes 'node index.js'
+  stop_matching_processes 'npm start'
   nohup npm start > server.log 2>&1 &
   sleep 1
 
   cd ../client
-  pkill -f 'serve -s dist -l 4173' || true
-  pkill -f 'vite --host 0.0.0.0 --port 5173' || true
+  kill_port_listeners 4173
+  stop_matching_processes 'serve -s dist -l 4173'
+  stop_matching_processes 'vite --host 0.0.0.0 --port 5173'
   npm run build > client.build.log 2>&1
   nohup serve -s dist -l 4173 > client.serve.log 2>&1 &
   sleep 2
@@ -147,10 +182,8 @@ restart_with_nohup() {
 
 has_services=0
 if command -v systemctl >/dev/null 2>&1; then
-  if systemctl list-unit-files 2>/dev/null | grep -q '^sonons\.service'; then
-    if systemctl list-unit-files 2>/dev/null | grep -q '^sonons-client\.service'; then
-      has_services=1
-    fi
+  if systemctl cat sonons.service >/dev/null 2>&1 && systemctl cat sonons-client.service >/dev/null 2>&1; then
+    has_services=1
   fi
 fi
 
