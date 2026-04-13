@@ -12,7 +12,7 @@ const execFilePromise = util.promisify(execFile);
 
 const app = express();
 const PORT = 3005;
-const HOST_IP = '10.10.4.14';
+const HOST_IP = process.env.HOST_IP || '10.10.4.14';
 const VERSION = '8.0 (Clean URI)';
 const PLAYLIST_PATH = path.join(__dirname, 'playlist.json');
 const LIBRARY_PATH = path.join(__dirname, 'library.json');
@@ -1778,10 +1778,13 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     }
 
     const mediaToken = crypto.randomUUID();
-    const downloadedFile = await downloadAudioFile(normalizedUrl, mediaToken);
+    // STREAMING MODE (v8.0 Restore)
+    // We no longer download the whole file for YouTube URLs.
+    // Instead, we serve it via a real-time pipe in /sonons.mp3.
+    // const downloadedFile = await downloadAudioFile(normalizedUrl, mediaToken);
     assertStillLatest();
-    resetMediaState({ keepPaths: [downloadedFile] });
-    currentMediaFile = downloadedFile;
+    resetMediaState({ keepPaths: [] });
+    currentMediaFile = '';
     currentMediaToken = mediaToken;
     currentYoutubeUrl = normalizedUrl;
     currentTitle = title;
@@ -1814,19 +1817,24 @@ const startPlayback = async (deviceHost, youtubeUrl, fallbackMeta = null) => {
     const asciiTitle = truncate(toAscii(currentTitle) || 'Sonons Audio', 120);
     const safeTitle = escapeXml(normalizedTitle);
     const safeAsciiTitle = escapeXml(asciiTitle);
-    const mediaUri = `http://${HOST_IP}:${PORT}/media/${currentMediaToken}.mp3`;
+    const streamHost = `${HOST_IP}:${PORT}`;
+    const streamPath = `${streamHost}/sonons.mp3`;
+    const uriMp3Radio = `x-rincon-mp3radio://${streamPath}`;
+    const uriHttp = `http://${streamPath}`;
 
     log(`- Title: ${currentTitle}`);
-    log(`- Downloaded media: ${downloadedFile}`);
-    log(`- Primary URI: ${mediaUri}`);
+    log(`- Primary URI: ${uriMp3Radio}`);
 
     const buildMetadata = (titleValue) =>
-        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
+        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
 
     const candidates = [
-        { label: 'http file + meta', uri: mediaUri, metadata: buildMetadata(safeTitle) },
-        { label: 'http file + ascii-meta', uri: mediaUri, metadata: buildMetadata(safeAsciiTitle) },
-        { label: 'http file + empty', uri: mediaUri, metadata: '' }
+        { label: 'x-rincon-mp3radio + meta', uri: uriMp3Radio, metadata: buildMetadata(safeTitle) },
+        { label: 'x-rincon-mp3radio + ascii-meta', uri: uriMp3Radio, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'x-rincon-mp3radio + empty', uri: uriMp3Radio, metadata: '' },
+        { label: 'http + meta', uri: uriHttp, metadata: buildMetadata(safeTitle) },
+        { label: 'http + ascii-meta', uri: uriHttp, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'http + empty', uri: uriHttp, metadata: '' }
     ];
 
     let lastError;
@@ -1915,13 +1923,18 @@ const startUploadedPlayback = async (deviceHost, item) => {
     const asciiTitle = truncate(toAscii(currentTitle) || 'Uploaded Track', 120);
     const safeTitle = escapeXml(normalizedTitle);
     const safeAsciiTitle = escapeXml(asciiTitle);
-    const mediaUri = `http://${HOST_IP}:${PORT}/uploads/${encodeURIComponent(item.storedName)}`;
+    const streamHost = `${HOST_IP}:${PORT}`;
+    const streamPath = `${streamHost}/sonons.mp3`;
+    const uriMp3Radio = `x-rincon-mp3radio://${streamPath}`;
+    const uriHttp = `http://${streamPath}`;
     const buildMetadata = (titleValue) =>
-        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
+        `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="-1" parentID="-1" restricted="1"><dc:title>${titleValue}</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>`;
+
     const candidates = [
-        { label: 'upload + meta', uri: mediaUri, metadata: buildMetadata(safeTitle) },
-        { label: 'upload + ascii-meta', uri: mediaUri, metadata: buildMetadata(safeAsciiTitle) },
-        { label: 'upload + empty', uri: mediaUri, metadata: '' }
+        { label: 'upload + meta', uri: uriMp3Radio, metadata: buildMetadata(safeTitle) },
+        { label: 'upload + ascii-meta', uri: uriMp3Radio, metadata: buildMetadata(safeAsciiTitle) },
+        { label: 'upload + empty', uri: uriMp3Radio, metadata: '' },
+        { label: 'upload http + meta', uri: uriHttp, metadata: buildMetadata(safeTitle) }
     ];
     let lastError;
     for (const option of candidates) {
@@ -2067,15 +2080,266 @@ app.get('/status', (req, res) => {
     });
 });
 
-app.get('/sonons.mp3', (req, res) => {
-    if (!currentMediaFile || !fs.existsSync(currentMediaFile)) {
-        res.status(404).send('No downloaded media');
+app.get('/sonons.mp3', async (req, res) => {
+    log(`SPEAKER CONNECTED to /sonons.mp3`);
+
+    if (currentSourceType === 'upload') {
+        if (!currentMediaFile || !fs.existsSync(currentMediaFile)) {
+            res.status(404).send('No uploaded media');
+            return;
+        }
+
+        activeStreamCount += 1;
+        let closed = false;
+        const markClosed = () => {
+            if (closed) return;
+            closed = true;
+            activeStreamCount = Math.max(0, activeStreamCount - 1);
+        };
+
+        const headerTitle = String(currentTitle || 'Sonons Upload')
+            .replace(/[\r\n]+/g, ' ')
+            .replace(/[^\x20-\x7E]/g, '')
+            .trim() || 'Sonons Upload';
+
+        res.header('Content-Type', 'audio/mpeg');
+        res.header('ice-name', headerTitle);
+        res.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.header('Pragma', 'no-cache');
+        res.header('Expires', '0');
+        res.header('Connection', 'keep-alive');
+        res.header('Transfer-Encoding', 'chunked');
+        res.header('Accept-Ranges', 'none');
+        res.flushHeaders();
+
+        if (res.socket) {
+            res.socket.setKeepAlive(true, 15000);
+            res.socket.setNoDelay(true);
+            res.socket.setTimeout(0);
+        }
+
+        log(`- Serving upload via stream pipe: ${currentMediaFile}`);
+        const ffArgs = [
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-i', currentMediaFile,
+            '-vn', '-sn', '-dn',
+            '-acodec', 'libmp3lame',
+            '-b:a', '192k',
+            '-f', 'mp3',
+            '-flush_packets', '1',
+            'pipe:1'
+        ];
+
+        const ff = spawn(FFMPEG_BIN || 'ffmpeg', ffArgs);
+        let ffErr = '';
+        ff.stderr.on('data', (chunk) => {
+            if (ffErr.length < 2000) ffErr += chunk.toString();
+        });
+
+        ff.stdout.pipe(res);
+
+        ff.on('error', (e) => log(`FF Upload Error: ${e.message}`));
+        ff.on('close', (code, signal) => {
+            markClosed();
+            log(`UPLOAD STREAM CLOSED.`);
+            if (code !== 0 && code !== 255 && code !== null) {
+                log(`FF Upload Exit: code=${code} signal=${signal}`);
+                if (ffErr) log(`FF Stderr: ${ffErr.replace(/\s+/g, ' ').trim()}`);
+            }
+        });
+
+        req.on('close', () => {
+            if (!closed) {
+                log('SPEAKER DISCONNECTED from Upload.');
+                markClosed();
+                ff.kill();
+            }
+        });
         return;
     }
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.sendFile(currentMediaFile);
+
+    if (!currentYoutubeUrl) {
+        log('No active URL set, closing connection.');
+        res.end();
+        return;
+    }
+
+    if (restartTimer) {
+        clearTimeout(restartTimer);
+        restartTimer = null;
+        log('- Pending restart canceled (stream reconnected)');
+    }
+    restartAttempts = 0;
+
+    activeStreamCount += 1;
+    let closed = false;
+    const markClosed = () => {
+        if (closed) return;
+        closed = true;
+        activeStreamCount = Math.max(0, activeStreamCount - 1);
+    };
+
+    const headerTitle = String(currentTitle || 'Sonons Stream')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/[^\x20-\x7E]/g, '')
+        .trim() || 'Sonons Stream';
+
+    res.header('Content-Type', 'audio/mpeg');
+    res.header('ice-name', headerTitle);
+    res.header('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.header('Pragma', 'no-cache');
+    res.header('Expires', '0');
+    res.header('Connection', 'keep-alive');
+    res.header('Transfer-Encoding', 'chunked');
+    res.header('Accept-Ranges', 'none');
+    res.flushHeaders();
+
+    if (res.socket) {
+        res.socket.setKeepAlive(true, 15000);
+        res.socket.setNoDelay(true);
+        res.socket.setTimeout(0);
+    }
+
+    const hasFreshDirectUrl =
+        currentDirectUrlFor === currentYoutubeUrl
+        && currentDirectUrl
+        && (Date.now() - currentDirectUrlAt < DIRECT_URL_TTL_MS);
+
+    let directUrl = '';
+    if (hasFreshDirectUrl) {
+        directUrl = currentDirectUrl;
+        log('- Stream source: direct URL cache');
+    } else {
+        const waitMs = Math.max(0, YT_DIRECT_URL_WAIT_MS);
+        if (waitMs > 0) {
+            const startedAt = Date.now();
+            const pendingDirectInfo = resolveDirectUrl(currentYoutubeUrl);
+            pendingDirectInfo.catch(() => {});
+            try {
+                directUrl = await Promise.race([
+                    pendingDirectInfo.then((info) => info.url),
+                    new Promise((_, reject) => {
+                        setTimeout(() => reject(new Error('direct-url-timeout')), waitMs);
+                    })
+                ]);
+                log(`- Stream source: direct URL wait-hit (${Date.now() - startedAt}ms)`);
+            } catch (err) {
+                const msg = String(err?.message || err);
+                if (msg.includes('direct-url-timeout')) {
+                    log(`- Stream source: yt-dlp pipe (direct URL wait timeout ${waitMs}ms)`);
+                } else {
+                    log(`[WARN] Direct URL wait failed: ${msg}`);
+                    log('- Stream source: yt-dlp pipe');
+                }
+            }
+        } else {
+            log('- Stream source: yt-dlp pipe');
+        }
+    }
+
+    const ffArgs = directUrl
+        ? [
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '3',
+            '-reconnect_at_eof', '1',
+            '-user_agent', YT_USER_AGENT,
+            '-headers', 'Referer: https://www.youtube.com/\r\nOrigin: https://www.youtube.com\r\n',
+            '-fflags', '+nobuffer',
+            '-analyzeduration', '0',
+            '-probesize', '32k',
+            '-i', directUrl,
+            '-vn', '-sn', '-dn',
+            '-acodec', 'libmp3lame',
+            '-b:a', '192k',
+            '-f', 'mp3',
+            '-flush_packets', '1',
+            'pipe:1'
+        ]
+        : [
+            '-hide_banner',
+            '-loglevel', 'error',
+            '-thread_queue_size', '4096',
+            '-analyzeduration', '10M',
+            '-probesize', '5M',
+            '-fflags', '+discardcorrupt',
+            '-err_detect', 'ignore_err',
+            '-i', 'pipe:0',
+            '-vn', '-sn', '-dn',
+            '-acodec', 'libmp3lame',
+            '-b:a', '192k',
+            '-f', 'mp3',
+            '-flush_packets', '1',
+            'pipe:1'
+        ];
+
+    const ff = spawn(FFMPEG_BIN || 'ffmpeg', ffArgs);
+    let yt = null;
+    let ytErr = '';
+
+    if (!directUrl) {
+        const ytArgs = ['--no-config', '--no-warnings', '--no-playlist', '--no-progress'];
+        if (YT_COOKIES) ytArgs.push('--cookies', YT_COOKIES);
+        if (YT_JS_RUNTIME) ytArgs.push('--js-runtimes', YT_JS_RUNTIME);
+        if (YT_FORCE_IPV4) ytArgs.push('-4');
+        ytArgs.push(
+            '--extractor-args', YT_EXTRACTOR_ARGS,
+            '--user-agent', YT_USER_AGENT,
+            '-f', '140/251/250/249/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/18/best',
+            '-o', '-',
+            currentYoutubeUrl
+        );
+        yt = spawn(YT_DLP_BIN || 'yt-dlp', ytArgs);
+        yt.stderr.on('data', (chunk) => {
+            if (ytErr.length < 2000) ytErr += chunk.toString();
+        });
+        yt.on('error', (e) => log(`YT Error: ${e.message}`));
+        yt.on('close', (code, signal) => {
+            log(`YT Exit: code=${code ?? 'null'} signal=${signal ?? 'null'}`);
+            if (ytErr) log(`YT Stderr: ${ytErr.replace(/\s+/g, ' ').trim()}`);
+            if (code !== 0 && code !== null) {
+                log(`- yt-dlp failed, stream might be broken`);
+            }
+        });
+        yt.stdout.on('error', (e) => {
+            if (isEpipe(e)) return;
+            log(`YT stdout error: ${e.message}`);
+        });
+        ff.stdin.on('error', (e) => {
+            if (isEpipe(e)) return;
+            log(`FF stdin error: ${e.message}`);
+        });
+        yt.stdout.pipe(ff.stdin);
+    }
+
+    let ffErr = '';
+    ff.stderr.on('data', (chunk) => {
+        if (ffErr.length < 2000) ffErr += chunk.toString();
+    });
+
+    ff.stdout.pipe(res);
+
+    ff.on('error', (e) => log(`FF Error: ${e.message}`));
+    ff.on('close', (code, signal) => {
+        markClosed();
+        log(`STREAM CLOSED.`);
+        if (code !== 0 && code !== 255 && code !== null) {
+            log(`FF Exit: code=${code} signal=${signal}`);
+            if (ffErr) log(`FF Stderr: ${ffErr.replace(/\s+/g, ' ').trim()}`);
+        }
+    });
+
+    req.on('close', () => {
+        if (!closed) {
+            log('SPEAKER DISCONNECTED.');
+            markClosed();
+            if (yt) yt.kill();
+            ff.kill();
+        }
+    });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

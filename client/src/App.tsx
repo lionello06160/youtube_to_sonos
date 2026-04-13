@@ -138,6 +138,9 @@ function App() {
   const [actionBusy, setActionBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [ytUrl, setYtUrl] = useState('');
+  const [playingYt, setPlayingYt] = useState(false);
+
   const selectedMaster = selectedHosts[0];
   const onlineCount = devices.length;
 
@@ -337,6 +340,50 @@ function App() {
     }
   };
 
+  const handleYoutubePlay = async () => {
+    if (selectedHosts.length === 0 || !ytUrl.trim()) {
+      if (selectedHosts.length === 0) showToast('請先選擇播放裝置');
+      return;
+    }
+    if (actionBusy) return;
+    setActionBusy(true);
+    setPlayingYt(true);
+    try {
+      if (selectedHosts.length > 1) {
+        await groupSelectedDevices();
+      }
+      const res = await axios.post(`${API_URL}/play`, {
+        deviceHost: selectedHosts[0],
+        youtubeUrl: ytUrl.trim()
+      });
+      setNowPlaying((prev) => ({
+        ...(prev || {
+          isPlaying: true,
+          activeStreams: 1,
+          startedAt: Date.now(),
+          playbackState: 'playing',
+          sourceType: 'youtube',
+          autoStopTime: null,
+          autoShutdownTime: null
+        }),
+        title: res.data.title || 'YouTube Stream',
+        isPlaying: true,
+        activeStreams: 1,
+        startedAt: Date.now(),
+        positionSec: 0,
+        positionUpdatedAt: Date.now(),
+        playbackState: 'playing',
+        sourceType: 'youtube'
+      }));
+      showToast(`Started Broadcast: ${res.data.title || 'YouTube URL'}`);
+    } catch (err: unknown) {
+      showToast(getRequestErrorMessage(err, 'YouTube broadcast failed'));
+    } finally {
+      setPlayingYt(false);
+      setActionBusy(false);
+    }
+  };
+
   const handleLibraryDelete = async (track: LibraryTrack) => {
     setLibraryDeleteBusyId(track.id);
     try {
@@ -511,6 +558,37 @@ function App() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-6 px-1">
+                <div>
+                  <h3 className="text-white text-lg font-bold">YouTube Broadcast</h3>
+                  <p className="text-white/40 text-xs mt-1">Paste a URL here to stream audio instantly from YouTube.</p>
+                </div>
+              </div>
+              <div className="glass p-6 rounded-2xl flex flex-col md:flex-row gap-4 items-center">
+                <div className="flex-1 w-full relative">
+                  <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-white/20">link</span>
+                  <input
+                    type="text"
+                    value={ytUrl}
+                    onChange={(e) => setYtUrl(e.target.value)}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3.5 pl-12 pr-4 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
+                  />
+                </div>
+                <button
+                  onClick={() => void handleYoutubePlay()}
+                  disabled={actionBusy || !ytUrl.trim() || selectedHosts.length === 0}
+                  className="btn-accent shrink-0 px-8 py-3.5 rounded-xl bg-emerald-500 text-black font-bold text-xs uppercase tracking-widest hover:bg-emerald-400 transition-all disabled:opacity-50 flex items-center gap-2"
+                >
+                  <span className={`material-symbols-outlined text-[20px] ${playingYt ? 'animate-spin' : ''}`}>
+                    {playingYt ? 'progress_activity' : 'sensors'}
+                  </span>
+                  {playingYt ? 'Connecting...' : 'Broadcast'}
+                </button>
               </div>
             </div>
 
