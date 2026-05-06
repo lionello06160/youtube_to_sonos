@@ -498,6 +498,14 @@ body {
   padding: 2rem;
 }
 
+.upload-dropzone-modal {
+  min-height: 260px;
+}
+
+.upload-dropzone-modal .upload-dropzone__content {
+  min-height: 260px;
+}
+
 .upload-track {
   position: relative;
   overflow: hidden;

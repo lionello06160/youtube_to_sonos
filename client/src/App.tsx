@@ -120,6 +120,11 @@ function getRequestErrorMessage(err: unknown, fallback: string) {
   return fallback;
 }
 
+const playbackModes = [
+  { value: 'all', label: '隨機下一首', icon: 'shuffle' },
+  { value: 'single', label: '單曲循環', icon: 'repeat_one' }
+] as const;
+
 function App() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedHosts, setSelectedHosts] = useState<string[]>([]);
@@ -129,17 +134,17 @@ function App() {
   const [libraryTracks, setLibraryTracks] = useState<LibraryTrack[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryUploading, setLibraryUploading] = useState(false);
+  const [youtubeDownloadUrl, setYoutubeDownloadUrl] = useState('');
+  const [youtubeDownloading, setYoutubeDownloading] = useState(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [libraryBusyId, setLibraryBusyId] = useState<string | null>(null);
   const [libraryDeleteBusyId, setLibraryDeleteBusyId] = useState<string | null>(null);
   const [isUploadHover, setIsUploadHover] = useState(false);
+  const [isUploadPanelOpen, setIsUploadPanelOpen] = useState(false);
   const [nowPlaying, setNowPlaying] = useState<PlaybackStatus | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [actionBusy, setActionBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const [ytUrl, setYtUrl] = useState('');
-  const [playingYt, setPlayingYt] = useState(false);
 
   const selectedMaster = selectedHosts[0];
   const onlineCount = devices.length;
@@ -285,9 +290,30 @@ function App() {
       showToast(message);
     } finally {
       setLibraryUploading(false);
+      setIsUploadPanelOpen(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleYoutubeDownload = async () => {
+    const url = youtubeDownloadUrl.trim();
+    if (!url || youtubeDownloading) return;
+    setYoutubeDownloading(true);
+    setLibraryError(null);
+    try {
+      const res = await axios.post(`${API_URL}/library/youtube`, { youtubeUrl: url });
+      setLibraryTracks(res.data.items || []);
+      setYoutubeDownloadUrl('');
+      setIsUploadPanelOpen(false);
+      showToast(`Downloaded ${res.data.item?.title || 'YouTube audio'}`);
+    } catch (err: unknown) {
+      const message = getRequestErrorMessage(err, 'YouTube download failed');
+      setLibraryError(message);
+      showToast(message);
+    } finally {
+      setYoutubeDownloading(false);
     }
   };
 
@@ -340,50 +366,6 @@ function App() {
     }
   };
 
-  const handleYoutubePlay = async () => {
-    if (selectedHosts.length === 0 || !ytUrl.trim()) {
-      if (selectedHosts.length === 0) showToast('請先選擇播放裝置');
-      return;
-    }
-    if (actionBusy) return;
-    setActionBusy(true);
-    setPlayingYt(true);
-    try {
-      if (selectedHosts.length > 1) {
-        await groupSelectedDevices();
-      }
-      const res = await axios.post(`${API_URL}/play`, {
-        deviceHost: selectedHosts[0],
-        youtubeUrl: ytUrl.trim()
-      });
-      setNowPlaying((prev) => ({
-        ...(prev || {
-          isPlaying: true,
-          activeStreams: 1,
-          startedAt: Date.now(),
-          playbackState: 'playing',
-          sourceType: 'youtube',
-          autoStopTime: null,
-          autoShutdownTime: null
-        }),
-        title: res.data.title || 'YouTube Stream',
-        isPlaying: true,
-        activeStreams: 1,
-        startedAt: Date.now(),
-        positionSec: 0,
-        positionUpdatedAt: Date.now(),
-        playbackState: 'playing',
-        sourceType: 'youtube'
-      }));
-      showToast(`Started Broadcast: ${res.data.title || 'YouTube URL'}`);
-    } catch (err: unknown) {
-      showToast(getRequestErrorMessage(err, 'YouTube broadcast failed'));
-    } finally {
-      setPlayingYt(false);
-      setActionBusy(false);
-    }
-  };
-
   const handleLibraryDelete = async (track: LibraryTrack) => {
     setLibraryDeleteBusyId(track.id);
     try {
@@ -394,6 +376,30 @@ function App() {
       showToast(getRequestErrorMessage(err, 'Delete failed'));
     } finally {
       setLibraryDeleteBusyId(null);
+    }
+  };
+
+  const handlePlaybackModeChange = async (loopMode: 'all' | 'single') => {
+    const previousMode = nowPlaying?.loopMode || 'all';
+    setNowPlaying((prev) => ({
+      ...(prev || {
+        title: null,
+        isPlaying: false,
+        activeStreams: 0,
+        startedAt: null,
+        positionSec: 0,
+        positionUpdatedAt: null,
+        durationSec: null,
+        durationLabel: null
+      }),
+      loopMode
+    }));
+    try {
+      await axios.post(`${API_URL}/playlist/mode`, { loopMode });
+      showToast(loopMode === 'single' ? '已切換為單曲循環' : '已切換為隨機下一首');
+    } catch (err: unknown) {
+      setNowPlaying((prev) => prev ? { ...prev, loopMode: previousMode } : prev);
+      showToast(getRequestErrorMessage(err, 'Playback mode update failed'));
     }
   };
 
@@ -564,99 +570,43 @@ function App() {
             <div>
               <div className="flex items-center justify-between mb-6 px-1">
                 <div>
-                  <h3 className="text-white text-lg font-bold">YouTube Broadcast</h3>
-                  <p className="text-white/40 text-xs mt-1">Paste a URL here to stream audio instantly from YouTube.</p>
-                </div>
-              </div>
-              <div className="glass p-6 rounded-2xl flex flex-col md:flex-row gap-4 items-center">
-                <div className="flex-1 w-full relative">
-                  <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-white/20">link</span>
-                  <input
-                    type="text"
-                    value={ytUrl}
-                    onChange={(e) => setYtUrl(e.target.value)}
-                    placeholder="https://www.youtube.com/watch?v=..."
-                    className="w-full bg-white/5 border border-white/10 rounded-xl py-3.5 pl-12 pr-4 text-sm text-white focus:outline-none focus:border-emerald-500/50 transition-all"
-                  />
-                </div>
-                <button
-                  onClick={() => void handleYoutubePlay()}
-                  disabled={actionBusy || !ytUrl.trim() || selectedHosts.length === 0}
-                  className="btn-accent shrink-0 px-8 py-3.5 rounded-xl bg-emerald-500 text-black font-bold text-xs uppercase tracking-widest hover:bg-emerald-400 transition-all disabled:opacity-50 flex items-center gap-2"
-                >
-                  <span className={`material-symbols-outlined text-[20px] ${playingYt ? 'animate-spin' : ''}`}>
-                    {playingYt ? 'progress_activity' : 'sensors'}
-                  </span>
-                  {playingYt ? 'Connecting...' : 'Broadcast'}
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-6 px-1">
-                <div>
                   <h3 className="text-white text-lg font-bold">Upload Library</h3>
                   <p className="text-white/40 text-xs mt-1">The upload vault is now the only playback source.</p>
                 </div>
-                <div className="text-white/40 text-[11px] font-mono">
-                  {libraryTracks.length} file{libraryTracks.length === 1 ? '' : 's'}
+                <div className="flex flex-col items-end gap-3 sm:flex-row sm:items-center">
+                  <div className="flex rounded-xl border border-white/10 bg-white/5 p-1">
+                    {playbackModes.map((mode) => {
+                      const isActive = (nowPlaying?.loopMode || 'all') === mode.value;
+                      return (
+                        <button
+                          key={mode.value}
+                          type="button"
+                          onClick={() => void handlePlaybackModeChange(mode.value)}
+                          className={`flex h-9 items-center gap-2 rounded-lg px-3 text-[11px] font-bold transition-all ${isActive ? 'bg-emerald-500 text-black' : 'text-white/45 hover:text-white hover:bg-white/5'}`}
+                          aria-pressed={isActive}
+                          title={mode.label}
+                        >
+                          <span className="material-symbols-outlined text-[18px]">{mode.icon}</span>
+                          <span>{mode.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="text-white/40 text-[11px] font-mono">
+                    {libraryTracks.length} file{libraryTracks.length === 1 ? '' : 's'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsUploadPanelOpen(true)}
+                    className="flex h-10 items-center gap-2 rounded-xl bg-white px-4 text-[11px] font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-emerald-100"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">upload_file</span>
+                    Upload
+                  </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_1.4fr] gap-6 items-start">
-                <div className="glass rounded-2xl border border-white/10 p-6">
-                  <div
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setIsUploadHover(true);
-                    }}
-                    onDragLeave={() => setIsUploadHover(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setIsUploadHover(false);
-                      void handleLibraryUpload(e.dataTransfer.files);
-                    }}
-                    className={`upload-dropzone ${isUploadHover ? 'is-hover' : ''} ${libraryUploading ? 'is-uploading' : ''}`}
-                  >
-                    <div className="upload-dropzone__halo" />
-                    <div className="upload-dropzone__content">
-                      <div className="size-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
-                        <span className={`material-symbols-outlined text-emerald-300 text-4xl ${libraryUploading ? 'animate-bounce' : ''}`}>upload_file</span>
-                      </div>
-                      <div>
-                        <h4 className="text-white text-xl font-bold">Sound Vault</h4>
-                        <p className="text-white/45 text-sm mt-2 max-w-sm">
-                          Upload audio, keep it on the server, and play it across your selected Sonos zones.
-                        </p>
-                      </div>
-                      <div className="flex flex-wrap items-center justify-center gap-3">
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          disabled={libraryUploading}
-                          className="px-5 py-3 rounded-xl bg-white text-black font-bold text-xs uppercase tracking-[0.22em] disabled:opacity-50"
-                        >
-                          {libraryUploading ? 'Uploading...' : 'Choose Files'}
-                        </button>
-                        <span className="text-white/35 text-xs uppercase tracking-[0.26em]">or drag & drop</span>
-                      </div>
-                    </div>
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.aac"
-                    onChange={(e) => void handleLibraryUpload(e.target.files)}
-                    className="hidden"
-                  />
-                  {libraryError && (
-                    <div className="glass border border-rose-500/20 text-rose-200 px-4 py-3 rounded-xl mt-4">
-                      {libraryError}
-                    </div>
-                  )}
-                </div>
-
+              <div>
                 <div className="glass self-start min-w-0 overflow-hidden rounded-2xl border border-white/10 p-4 md:p-5">
                   {libraryLoading ? (
                     <div className="p-8 animate-pulse">
@@ -795,6 +745,116 @@ function App() {
           </div>
         </footer>
       </main>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.aac"
+        onChange={(e) => void handleLibraryUpload(e.target.files)}
+        className="hidden"
+      />
+
+      {isUploadPanelOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+          <div className="glass w-full max-w-xl rounded-2xl border border-white/10 p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-white text-lg font-bold">Upload Audio</h3>
+                <p className="text-white/40 text-xs mt-1">Add files to the room library.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsUploadPanelOpen(false)}
+                className="flex size-10 items-center justify-center rounded-xl border border-white/10 text-white/50 transition-all hover:bg-white/5 hover:text-white"
+                aria-label="Close upload panel"
+                title="Close"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <div className="mb-4 rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.06] p-4">
+              <div className="mb-3 flex items-center gap-3">
+                <div className="flex size-10 items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-500/10">
+                  <span className="material-symbols-outlined text-emerald-300 text-[22px]">download</span>
+                </div>
+                <div>
+                  <h4 className="text-white text-sm font-bold">YouTube to MP3</h4>
+                  <p className="text-white/40 text-xs mt-0.5">Download audio and add it to the library.</p>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <div className="relative min-w-0 flex-1">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-white/25 text-[18px]">link</span>
+                  <input
+                    type="text"
+                    value={youtubeDownloadUrl}
+                    onChange={(e) => setYoutubeDownloadUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleYoutubeDownload();
+                    }}
+                    placeholder="https://www.youtube.com/watch?v=..."
+                    className="h-11 w-full rounded-xl border border-white/10 bg-white/5 pl-10 pr-3 text-sm text-white outline-none transition-all placeholder:text-white/25 focus:border-emerald-400/45"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleYoutubeDownload()}
+                  disabled={!youtubeDownloadUrl.trim() || youtubeDownloading || libraryUploading}
+                  className="flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-5 text-xs font-bold uppercase tracking-[0.18em] text-black transition-all hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <span className={`material-symbols-outlined text-[18px] ${youtubeDownloading ? 'animate-spin' : ''}`}>
+                    {youtubeDownloading ? 'progress_activity' : 'download'}
+                  </span>
+                  {youtubeDownloading ? 'Downloading' : 'Download'}
+                </button>
+              </div>
+            </div>
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsUploadHover(true);
+              }}
+              onDragLeave={() => setIsUploadHover(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsUploadHover(false);
+                void handleLibraryUpload(e.dataTransfer.files);
+              }}
+              className={`upload-dropzone upload-dropzone-modal ${isUploadHover ? 'is-hover' : ''} ${libraryUploading ? 'is-uploading' : ''}`}
+            >
+              <div className="upload-dropzone__halo" />
+              <div className="upload-dropzone__content">
+                <div className="size-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center">
+                  <span className={`material-symbols-outlined text-emerald-300 text-4xl ${libraryUploading ? 'animate-bounce' : ''}`}>upload_file</span>
+                </div>
+                <div>
+                  <h4 className="text-white text-xl font-bold">Sound Vault</h4>
+                  <p className="text-white/45 text-sm mt-2 max-w-sm">
+                    Upload audio, keep it on the server, and play it across your selected Sonos zones.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={libraryUploading}
+                    className="px-5 py-3 rounded-xl bg-white text-black font-bold text-xs uppercase tracking-[0.22em] disabled:opacity-50"
+                  >
+                    {libraryUploading ? 'Uploading...' : 'Choose Files'}
+                  </button>
+                  <span className="text-white/35 text-xs uppercase tracking-[0.26em]">or drag & drop</span>
+                </div>
+              </div>
+            </div>
+            {libraryError && (
+              <div className="glass border border-rose-500/20 text-rose-200 px-4 py-3 rounded-xl mt-4">
+                {libraryError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="fixed bottom-32 right-8 glass p-4 rounded-2xl border-emerald-500/20 flex items-center gap-4 shadow-2xl z-50">

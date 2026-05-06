@@ -124,6 +124,9 @@ set -euo pipefail
 cd "${REMOTE_DIR:-/home/lionel/apps/youtube_to_sonos}"
 
 restart_with_systemctl() {
+  cd "${REMOTE_DIR:-/home/lionel/apps/youtube_to_sonos}/client"
+  npm run build
+  cd "${REMOTE_DIR:-/home/lionel/apps/youtube_to_sonos}"
   if command -v lsof >/dev/null 2>&1; then
     pids="$(lsof -ti tcp:3005 2>/dev/null || true)"
     [[ -n "${pids:-}" ]] && kill $pids 2>/dev/null || true

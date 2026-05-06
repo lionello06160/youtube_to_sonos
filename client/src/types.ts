@@ -13,8 +13,8 @@ export interface LibraryTrack {
     storedName: string;
     mimeType: string;
     size: number;
-    durationSec: number | null;
-    durationLabel: string | null;
+    durationSec?: number | null;
+    durationLabel?: string | null;
     uploadedAt: string;
 }
 
@@ -25,11 +25,12 @@ export interface PlaybackStatus {
     startedAt: number | null;
     positionSec: number | null;
     positionUpdatedAt: number | null;
-    durationSec: number | null;
-    durationLabel: string | null;
+    durationSec?: number | null;
+    durationLabel?: string | null;
     playbackState?: string | null;
     sourceType?: string | null;
     libraryItemId?: string | null;
     autoStopTime?: string | null;
     autoShutdownTime?: string | null;
+    loopMode?: 'all' | 'single' | 'shuffle' | string | null;
 }

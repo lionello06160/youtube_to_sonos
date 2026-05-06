@@ -99,6 +99,9 @@ let shufflePos = 0;
 let playlistAdvanceLock = false;
 let libraryAdvanceLock = false;
 let playbackStartToken = 0;
+let uploadStreamToken = 0;
+let activeUploadStreamCleanup = null;
+let uploadAdvanceTimer = null;
 const PLAYBACK_SUPERSEDED_CODE = 'PLAYBACK_SUPERSEDED';
 
 const parseTime = (value) => {
@@ -566,6 +569,16 @@ const fetchTitleViaYtDlp = async (youtubeUrl, timeoutMs = YT_TITLE_FALLBACK_TIME
     return sanitizeFetchedTitle(firstLine || '');
 };
 
+const fetchTitleViaDefaultYtDlp = async (youtubeUrl, timeoutMs = YT_TITLE_FALLBACK_TIMEOUT_MS) => {
+    const args = ['--no-config', '--no-warnings', '--no-playlist', '--skip-download'];
+    if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+    if (YT_FORCE_IPV4) args.push('-4');
+    args.push('--print', '%(title)s', youtubeUrl);
+    const { stdout } = await execBinary('yt-dlp', args, { maxBuffer: 1024 * 256, timeout: timeoutMs });
+    const firstLine = stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    return sanitizeFetchedTitle(firstLine || '');
+};
+
 const resolveTitleFallback = async (youtubeUrl) => {
     const attempts = [
         { label: 'oEmbed', fn: () => fetchTitleFromOEmbed(youtubeUrl) },
@@ -1028,14 +1041,12 @@ const advanceLibraryPlayback = async (deviceHost) => {
         let nextIndex = currentIndex;
         if (loopMode === 'single') {
             // keep same item
-        } else if (loopMode === 'shuffle') {
+        } else if (loopMode === 'shuffle' || loopMode === 'all') {
             if (libraryItems.length > 1) {
                 do {
                     nextIndex = Math.floor(Math.random() * libraryItems.length);
                 } while (nextIndex === currentIndex);
             }
-        } else {
-            nextIndex = (currentIndex + 1) % libraryItems.length;
         }
         const nextItem = libraryItems[nextIndex];
         if (!nextItem) return;
@@ -1049,6 +1060,27 @@ const advanceLibraryPlayback = async (deviceHost) => {
     } finally {
         libraryAdvanceLock = false;
     }
+};
+
+const scheduleLibraryAdvanceAfterUploadEnd = (deviceHost, sourceItemId, sourceStreamToken) => {
+    if (!deviceHost || !sourceItemId) return;
+    if (uploadAdvanceTimer) {
+        clearTimeout(uploadAdvanceTimer);
+        uploadAdvanceTimer = null;
+    }
+    uploadAdvanceTimer = setTimeout(() => {
+        uploadAdvanceTimer = null;
+        if (
+            currentSourceType !== 'upload'
+            || currentLibraryItemId !== sourceItemId
+            || sourceStreamToken !== uploadStreamToken
+            || libraryAdvanceLock
+        ) {
+            return;
+        }
+        log('- Upload finished; advancing library playback.');
+        advanceLibraryPlayback(deviceHost);
+    }, 500);
 };
 
 log(`BOOT: Starting Sonons v${VERSION}...`);
@@ -1229,6 +1261,14 @@ const resetPlaybackState = () => {
     currentLibraryItemId = null;
     restartAttempts = 0;
     lastPlayback = null;
+    if (uploadAdvanceTimer) {
+        clearTimeout(uploadAdvanceTimer);
+        uploadAdvanceTimer = null;
+    }
+    if (activeUploadStreamCleanup) {
+        activeUploadStreamCleanup();
+        activeUploadStreamCleanup = null;
+    }
     stopPlaybackMonitor();
     resetMediaState();
 };
@@ -1373,6 +1413,97 @@ app.post('/library/upload', uploadLibraryFiles.array('files', 24), async (req, r
     libraryItems = sortLibraryItems([...added, ...libraryItems]);
     persistLibraryState();
     res.send({ items: libraryItems, added });
+});
+
+app.post('/library/youtube', async (req, res) => {
+    const { youtubeUrl } = req.body || {};
+    if (!youtubeUrl || typeof youtubeUrl !== 'string') {
+        res.status(400).send('youtubeUrl required');
+        return;
+    }
+    const normalizedUrl = normalizeYoutubeUrl(youtubeUrl);
+    const id = crypto.randomUUID();
+    const storedName = `${id}.mp3`;
+    const outputTemplate = path.join(UPLOADS_DIR, `${id}.%(ext)s`);
+    const finalPath = path.join(UPLOADS_DIR, storedName);
+    try {
+        assertDependenciesAvailable('yt-dlp', 'ffmpeg');
+        ensureUploadsDir();
+        const buildDownloadArgs = ({ useCookies, useExtractorArgs }) => {
+            const args = ['--no-config', '--no-warnings', '--no-playlist', '--no-progress'];
+            if (useCookies && YT_COOKIES) args.push('--cookies', YT_COOKIES);
+            if (YT_JS_RUNTIME) args.push('--js-runtimes', YT_JS_RUNTIME);
+            if (YT_FORCE_IPV4) args.push('-4');
+            if (useExtractorArgs) args.push('--extractor-args', YT_EXTRACTOR_ARGS);
+            args.push(
+                '--user-agent', YT_USER_AGENT,
+                '--ffmpeg-location', path.dirname(FFMPEG_BIN),
+                '-f', '140/251/250/249/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/18/best',
+                '-x',
+                '--audio-format', 'mp3',
+                '--audio-quality', '0',
+                '-o', outputTemplate,
+                normalizedUrl
+            );
+            return args;
+        };
+        const attempts = YT_COOKIES
+            ? [
+                { label: 'cookies', args: buildDownloadArgs({ useCookies: true, useExtractorArgs: true }) },
+                { label: 'no-cookies-default-client', args: buildDownloadArgs({ useCookies: false, useExtractorArgs: false }) }
+            ]
+            : [{ label: 'default', args: buildDownloadArgs({ useCookies: false, useExtractorArgs: false }) }];
+        log(`- Downloading YouTube audio into library: ${normalizedUrl}`);
+        let lastDownloadError = null;
+        for (const attempt of attempts) {
+            try {
+                log(`- YouTube library download attempt: ${attempt.label}`);
+                await execBinary('yt-dlp', attempt.args, {
+                    maxBuffer: 1024 * 1024 * 2,
+                    timeout: YT_DOWNLOAD_TIMEOUT_MS
+                });
+                lastDownloadError = null;
+                break;
+            } catch (err) {
+                lastDownloadError = err;
+                log(`[WARN] YouTube library download attempt failed (${attempt.label}): ${String(err.message || err).split('\n')[0]}`);
+                if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+            }
+        }
+        if (lastDownloadError) throw lastDownloadError;
+        if (!fs.existsSync(finalPath)) {
+            throw new Error(`Downloaded file missing: ${storedName}`);
+        }
+        const [durationSec, titleResult] = await Promise.all([
+            probeAudioDuration(finalPath),
+            fetchTitleViaYtDlp(normalizedUrl, YT_METADATA_TIMEOUT_MS)
+                .catch(() => fetchTitleViaDefaultYtDlp(normalizedUrl, YT_METADATA_TIMEOUT_MS))
+                .catch(() => null)
+        ]);
+        const title = sanitizeLibraryTitle(titleResult || `YouTube ${extractVideoIdFromYoutubeUrl(normalizedUrl) || id}`);
+        const item = {
+            id,
+            title,
+            originalName: `${title}.mp3`,
+            storedName,
+            mimeType: 'audio/mpeg',
+            size: fs.statSync(finalPath).size,
+            durationSec,
+            durationLabel: durationSec != null ? formatDuration(durationSec) : null,
+            uploadedAt: new Date().toISOString()
+        };
+        libraryItems = sortLibraryItems([item, ...libraryItems]);
+        persistLibraryState();
+        res.send({ items: libraryItems, item });
+    } catch (err) {
+        try {
+            if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
+        } catch (cleanupErr) {
+            log(`[WARN] Failed to remove failed YouTube download ${storedName}: ${cleanupErr.message}`);
+        }
+        log(`[ERR] YouTube library download: ${err.message}`);
+        res.status(500).send(err.message);
+    }
 });
 
 app.delete('/library/:id', async (req, res) => {
@@ -2119,6 +2250,14 @@ app.get('/sonons.mp3', async (req, res) => {
         }
 
         log(`- Serving upload via stream pipe: ${currentMediaFile}`);
+        if (activeUploadStreamCleanup) {
+            activeUploadStreamCleanup();
+            activeUploadStreamCleanup = null;
+        }
+        const sourceItemId = currentLibraryItemId;
+        const sourceStreamToken = ++uploadStreamToken;
+        const sourceDeviceHost = lastPlayback?.deviceHost;
+        const sourceFile = currentMediaFile;
         const ffArgs = [
             '-hide_banner',
             '-loglevel', 'error',
@@ -2132,6 +2271,13 @@ app.get('/sonons.mp3', async (req, res) => {
         ];
 
         const ff = spawn(FFMPEG_BIN || 'ffmpeg', ffArgs);
+        activeUploadStreamCleanup = () => {
+            if (!closed) {
+                log('Closing superseded upload stream.');
+                markClosed();
+            }
+            ff.kill();
+        };
         let ffErr = '';
         ff.stderr.on('data', (chunk) => {
             if (ffErr.length < 2000) ffErr += chunk.toString();
@@ -2141,11 +2287,17 @@ app.get('/sonons.mp3', async (req, res) => {
 
         ff.on('error', (e) => log(`FF Upload Error: ${e.message}`));
         ff.on('close', (code, signal) => {
+            if (sourceStreamToken === uploadStreamToken) {
+                activeUploadStreamCleanup = null;
+            }
             markClosed();
             log(`UPLOAD STREAM CLOSED.`);
             if (code !== 0 && code !== 255 && code !== null) {
                 log(`FF Upload Exit: code=${code} signal=${signal}`);
                 if (ffErr) log(`FF Stderr: ${ffErr.replace(/\s+/g, ' ').trim()}`);
+            }
+            if (code === 0 && signal == null && currentMediaFile === sourceFile) {
+                scheduleLibraryAdvanceAfterUploadEnd(sourceDeviceHost, sourceItemId, sourceStreamToken);
             }
         });
 
@@ -2154,6 +2306,9 @@ app.get('/sonons.mp3', async (req, res) => {
                 log('SPEAKER DISCONNECTED from Upload.');
                 markClosed();
                 ff.kill();
+            }
+            if (sourceStreamToken === uploadStreamToken) {
+                activeUploadStreamCleanup = null;
             }
         });
         return;
